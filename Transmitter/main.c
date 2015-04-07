@@ -45,10 +45,6 @@ are permitted provided that the following conditions are met:
 #include  "msp430g2553.h"
 #include  "CC1101.h"
 
-#pragma SET_DATA_SECTION(".infoC")
-const unsigned int locoAddress = 3;		// Change this to desired value
-#pragma SET_DATA_SECTION()
-
 // P1 Connections
 #define     LED1                  BIT0	// out: Green LED and GDO2
 #define     POTH                  BIT1	// out: Pot high
@@ -73,13 +69,19 @@ const unsigned int locoAddress = 3;		// Change this to desired value
 #define		DCCFL				BIT4
 #define		DCCF1				BIT0
 #define		DCCF2				BIT1
-#define		TOGGLE				true
-#define		PUSH_HOLD			false
 
 #define		SET_BIT(var, bits)		var |= (bits)
 #define		CLEAR_BIT(var, bits)	var &= ~(bits)
 #define		TOGGLE_BIT(var, bits)	var ^= (bits)
 
+
+// Following constants can be modified by changing the values in the HEX file
+#pragma SET_DATA_SECTION(".infoC")
+const unsigned int locoAddress = 3;	// Change this to desired value
+const bool push0Toggle = false;			// PB0 is press & hold, for whistle
+const bool push1Toggle = false;			// PB1 is press & hold, for bell
+const bool push2Toggle = true;			// PB2 toggles off and on, for light
+#pragma SET_DATA_SECTION()
 
 unsigned int dccTransmitData;
 unsigned int dccTransmitBit;
@@ -91,6 +93,8 @@ struct {
 	unsigned char dccChecksum;
 	unsigned char dccEnd;
 } dccBuffer;
+
+static unsigned int powerOffCounter = 0;
 
 void Initialize(void);
 void InitializeTimers(void);
@@ -106,7 +110,7 @@ unsigned char DCCSpeed(int speed);
 void FlashLED(int speed);
 void SetupDCCBuffer(int speed, unsigned char pbState);
 void TransmitData(void);
-void WaitForPB2(unsigned char pbState);
+void CheckPowerOff(void);
 
 void SendBytes(const unsigned char* bytes, int byteCount);
 void Send2Bytes(unsigned char b1, unsigned char b2);
@@ -141,7 +145,7 @@ void main(void)
 		FlashLED(speed);
 		SetupDCCBuffer(speed, dccFunction);
 		TransmitData();
-		WaitForPB2(pbState);
+		CheckPowerOff();
 	}
 }
 
@@ -302,6 +306,7 @@ int GetSpeed(void)
  *
  * Returns the current state of the pushbuttons.
  * Bit 7 is set if the state has changed since the previous call
+ * Resets the 15-minute power off timer if the buttons have been pressed
  */
 unsigned char GetPushButtonState(void){
 	static unsigned char pbStatus = 0;
@@ -309,8 +314,13 @@ unsigned char GetPushButtonState(void){
 
 	CLEAR_BIT(pbStatus, 0x80);
 	newPBStatus = P2IN & (PUSH0 | PUSH1 | PUSH2);	// Read current PB state
-	if (newPBStatus != pbStatus)
+	if (newPBStatus != pbStatus) {		// Pushbutton state changed
 		SET_BIT(newPBStatus, 0x80);
+		if (newPBStatus & PUSH2)		// PB2 is pressed
+			powerOffCounter = 0x00ff;		// Short time to power off
+		else
+			powerOffCounter = 0;			// Reset 15 minute timer for power off
+	}
 	pbStatus = newPBStatus;
 	return pbStatus;
 }
@@ -343,11 +353,11 @@ void SetDCCFunction(unsigned char* pDccFunction, unsigned char pbState, unsigned
  */
 unsigned char DCCFunction(unsigned char pbState)
 {
-	static unsigned char dccFunction=0x80;	// DCC Function Group One command
+	static unsigned char dccFunction=0x80 | DCCFL;	// DCC Function Group One command, light on
 
-	SetDCCFunction(&dccFunction, pbState, PUSH0, DCCF2, PUSH_HOLD);		// PB0 - F2 (horn)
-	SetDCCFunction(&dccFunction, pbState, PUSH1, DCCF1, TOGGLE);		// PB1 - F1 (bell)
-	SetDCCFunction(&dccFunction, pbState, PUSH2, DCCFL, TOGGLE);		// PB2 - FL (light)
+	SetDCCFunction(&dccFunction, pbState, PUSH0, DCCF2, push0Toggle);		// PB0 - F2 (horn)
+	SetDCCFunction(&dccFunction, pbState, PUSH1, DCCF1, push1Toggle);		// PB1 - F1 (bell)
+	SetDCCFunction(&dccFunction, pbState, PUSH2, DCCFL, push2Toggle);		// PB2 - FL (light)
 
 	return dccFunction;
 }
@@ -463,23 +473,16 @@ void TransmitData(void)
 }
 
 /*
- * WaitForPB
+ * CheckPowerOff
  *
- * If waitPBCounter reaches zero then power down and wait for PB2 to be pressed
+ * If powerOffCount reaches zero then power down and wait for PB2 to be pressed
  */
-void WaitForPB2(unsigned char pbState)
+void CheckPowerOff(void)
 {
-	static unsigned char powerOffCount = 0;
-	bool bPowerOff = false;
+	unsigned char pbState;
 
-	if (pbState & PUSH2) {			// PB2 is held down
-		if (--powerOffCount == 0) {		// Counter expired - need to power down
-			bPowerOff = true;
-		}
-	} else
-		powerOffCount = 0;
+	if (--powerOffCounter == 0) {	// Counter expired - need to power down
 
-	if (bPowerOff) {
 		CLEAR_BIT(P1OUT, LED1);
 		CLEAR_BIT(P2DIR, GDO0);
 		TA0CCTL1 = 0;
@@ -495,7 +498,6 @@ void WaitForPB2(unsigned char pbState)
 			pbState = GetPushButtonState();
 		} while (!(pbState & PUSH2) || !(pbState & 0x80));	// Repeat until PB2 is pressed
 
-		bPowerOff = false;
 		TA0CCTL2 = 0;
 		InitializeRadio();
 	}

@@ -50,48 +50,25 @@ are permitted provided that the following conditions are met:
 #define     POTH                  BIT1	// out: Pot high
 #define     POTIN	              BIT2	// in:  Pot tap
 #define     POTL	              BIT3	// out: Pot low
-#define     UNUSED14	          BIT4	// out: Unused
+#define     UNUSED14              BIT4
 #define     SCLK                  BIT5	// out: To radio
 #define     MISO                  BIT6	// in:  I2C from radio UCB0
 #define     MOSI                  BIT7	// out: I2C to radio UCB0
 
 // P2 connections
-#define     PUSH5                 BIT0	// in:  Pushbutton 5
-#define     PUSH4                 BIT1	// in:  Pushbutton 4
-#define     PUSH3                 BIT2	// in:  Pushbutton 3
-#define     PUSH2	              BIT3	// in:  Pushbutton 2
+#define     RADIO0                BIT0	// in:  1 bit for radio channel (high for 3)
+#define     RADIO1                BIT1 	// out: 2 bit for radio channel - high (=2)
+#define     RADIO2                BIT2 	// in:  4 bit for radio channel (high for 10)
+#define     PUSH0	              BIT3	// in:  Pushbutton 0
 #define     PUSH1                 BIT4 	// in:  Pushbutton 1
-#define     PUSH0                 BIT5	// in:  Pushbutton 0
+#define     PUSH2                 BIT5	// in:  Pushbutton 2
 #define     GDO0	              BIT6	// in:  GDO0 = TA0.1 Timer0_A
 #define     CSN                   BIT7 	// out: To radio
 
-// DCC Commands
-#define		DCCSPEED			0x40
-#define		DCCFORWARDS			BIT5
-#define		DCCSPEEDLSB			BIT4
-#define		DCCFGROUP1			0x80
-#define		DCCFGROUP2A			0xB0
-#define		DCCFGROUP2B			0xA0
-
-
-// DCC bits for Function Group 1
-#define		DCCF0				BIT4
+// DCC Standard bits
+#define		DCCFL				BIT4
 #define		DCCF1				BIT0
 #define		DCCF2				BIT1
-#define		DCCF3				BIT2
-#define		DCCF4				BIT3
-
-// DCC bits for Function Group 2a
-#define		DCCF5				BIT0
-#define		DCCF6				BIT1
-#define		DCCF7				BIT2
-#define		DCCF8				BIT3
-
-// DCC bits for Function Group 2b
-#define		DCCF9				BIT0
-#define		DCCF10				BIT1
-#define		DCCF11				BIT2
-#define		DCCF12				BIT3
 
 #define		SET_BIT(var, bits)		var |= (bits)
 #define		CLEAR_BIT(var, bits)	var &= ~(bits)
@@ -100,25 +77,10 @@ are permitted provided that the following conditions are met:
 
 // Following constants can be modified by changing the values in the HEX file
 #pragma SET_DATA_SECTION(".infoC")
-
 const unsigned int locoAddress = 11;	// Change this to desired value
-const unsigned char radioChannel=2;		// Set to desired radio channel
-
-// Select toggle or press-and-hold mode	// FWD/REV				NEUTRAL
-const bool f0Toggle = true;				// headlight			headlight
-const bool f1Toggle = false;			// bell					bell
-const bool f2Toggle = false;			// whistle				whistle
-const bool f3Toggle = false;			// coupler				coupler
-const bool f4Toggle = true;				// blower hiss			blower hiss
-const bool f5Toggle = true;				// dynamic brake		dynamic brake
-const bool f6Toggle = false;			// doppler on/off		start-up
-const bool f7Toggle = false;			// squeal brakes		cylinder cocks arm
-const bool f8Toggle = true;				// audio mute			audio mute
-const bool f9Toggle = true;				// very heavy load		disconnect/standby/shutdown
-const bool f10Toggle = false;			// speed report			status report
-const bool f11Toggle = true;			// horn/whistle toggle	horn/whistle toggle
-const bool f12Toggle = true;			// cab lights			cab lights
-
+const bool push0Toggle = false;			// PB0 is press & hold, for whistle
+const bool push1Toggle = false;			// PB1 is press & hold, for bell
+const bool push2Toggle = true;			// PB2 toggles off and on, for light
 #pragma SET_DATA_SECTION()
 
 unsigned int dccTransmitData;
@@ -132,12 +94,6 @@ struct {
 	unsigned char dccEnd;
 } dccBuffer;
 
-struct dccFunctions {
-	unsigned char group1;	// DCC Function Group One F0-F4
-	unsigned char group2a;	// DCC Function Group Two, F5-F8
-	unsigned char group2b;	// DCC Function Group Two, F9-F12
-};
-
 static unsigned int powerOffCounter = 0;
 
 void Initialize(void);
@@ -149,10 +105,10 @@ void InitializeRadio(void);
 int  GetSpeed(void);
 unsigned char GetPushButtonState(void);
 void SetDCCFunction(unsigned char* pDccFunction, unsigned char pbState, unsigned char pbBit, unsigned char dccBit, bool bToggle);
-void DCCFunction(unsigned char pbState, struct dccFunctions *  pDccFn);
+unsigned char DCCFunction(unsigned char pbState);
 unsigned char DCCSpeed(int speed);
 void FlashLED(int speed);
-void SetupDCCBuffer(int speed, struct dccFunctions * pDccFn);
+void SetupDCCBuffer(int speed, unsigned char pbState);
 void TransmitData(void);
 void CheckPowerOff(void);
 
@@ -169,12 +125,7 @@ inline void SendByte(unsigned char b);
 void main(void)
 {
 	int speed;
-	unsigned char pbState;
-	static struct dccFunctions dccFn = {
-			DCCFGROUP1 | DCCF0,
-			DCCFGROUP2A,
-			DCCFGROUP2B
-	};
+	unsigned char pbState, dccFunction;
 
 	Initialize();
 
@@ -189,10 +140,10 @@ void main(void)
 
 		speed = GetSpeed();
 		pbState = GetPushButtonState();
-		DCCFunction(pbState, &dccFn);			// Set up the DCC function settings
+		dccFunction = DCCFunction(pbState);
 		SetRadioChannel(false);
 		FlashLED(speed);
-		SetupDCCBuffer(speed, &dccFn);
+		SetupDCCBuffer(speed, dccFunction);
 		TransmitData();
 		CheckPowerOff();
 	}
@@ -252,9 +203,9 @@ void InitializePorts(void)
 	ADC10AE0 = POTIN;					// Analog enable
 
 	P2SEL = GDO0;
-	P2OUT = CSN;				// High
-	P2REN = PUSH0 | PUSH1 | PUSH2 | PUSH3 | PUSH4 | PUSH5;	// Pull inputs up
-	P2DIR = CSN;				// Outputs
+	P2OUT = CSN | RADIO1;				// High
+	P2REN = RADIO0 | RADIO2 | PUSH0 | PUSH1 | PUSH2;	// Pull inputs up
+	P2DIR = CSN | RADIO1;				// Outputs
 
 	P3REN = 0xff;						// Pull up all P3 ports (not used)
 }
@@ -262,7 +213,7 @@ void InitializePorts(void)
 /*
  * SetRadioChannel
  *
- * Choose a radio channel based on the constant radioChannel; default channel 2
+ * Choose a readio channel based on the bits from signals RADIO0-2; default channel 2
  * If channel has changed then reconfigure radio
  *
  * The frequencies supported by the radio:
@@ -274,18 +225,21 @@ void InitializePorts(void)
 void SetRadioChannel(bool bReset)
 {
 	static unsigned char currentChannel=0;
+	unsigned char channel;
 	static const unsigned char channelSelect[] =
 			{0x4B, 0x45, 0x33, 0x27, 0x1B, 0x15, 0x0F, 0x03};
 
 	if (bReset)
 		currentChannel = 0;
 
-	if (radioChannel != currentChannel) {
+	channel = P2IN & (RADIO0 | RADIO1 | RADIO2);
+
+	if (channel != currentChannel) {
 	    __bic_SR_register(GIE);        	// Disable interrupts
 		SendByte(CC1101_SIDLE);			// Exit RX/TX, turn off frequency synthesizer
-		Send2Bytes(CC1101_REG_CHANNR, channelSelect[radioChannel]);	// Channel number
+		Send2Bytes(CC1101_REG_CHANNR, channelSelect[channel]);	// Channel number
 		SendByte(CC1101_STX);			// In IDLE state: enable TX
-		currentChannel = radioChannel;
+		currentChannel = channel;
 	    __bis_SR_register(GIE);        	// Enable interrupts
 	}
 
@@ -363,10 +317,10 @@ unsigned char GetPushButtonState(void){
 	unsigned char newPBStatus;
 
 	CLEAR_BIT(pbStatus, 0x80);
-	newPBStatus = P2IN & (PUSH0 | PUSH1 | PUSH2 | PUSH3 | PUSH4 | PUSH5);	// Read current PB state
-	if (newPBStatus != pbStatus) {			// Pushbutton state changed
+	newPBStatus = P2IN & (PUSH0 | PUSH1 | PUSH2);	// Read current PB state
+	if (newPBStatus != pbStatus) {		// Pushbutton state changed
 		SET_BIT(newPBStatus, 0x80);
-		if (newPBStatus & PUSH0)			// PB0 is pressed
+		if (newPBStatus & PUSH2)		// PB2 is pressed
 			powerOffCounter = 0x00ff;		// Short time to power off
 		else
 			powerOffCounter = 0;			// Reset 15 minute timer for power off
@@ -392,35 +346,26 @@ void SetDCCFunction(unsigned char* pDccFunction, unsigned char pbState, unsigned
 /*
  * DCCFunction
  *
- * Read the current state of the pushbuttons and set the corresponding state
- * in the DCC function group instructions.
- *
- * If PUSH5 is pressed: PUSH0=F8, PUSH1=F9, PUSH2=F10, PUSH3=F11, PUSH4=F12
- * Else if PUSH4 is pressed: PUSH0=F4, PUSH1=F5, PUSH2=F6, PUSH3=F7
- * Else: PUSH0=F0, PUSH1=F1, PUSH2=F2, PUSH3=F3
+ * Read the current state of the pushbuttons and return the corresponding state
+ * in the DCC function group instruction:
+ * Bit 7-5: 100 for function group one
+ * Bit 4:   FL - Light
+ * Bit 3:	F4
+ * Bit 2:	F3
+ * Bit 1:	F2 - Horn
+ * Bit 0:	F1 - Bell
  */
-void DCCFunction(unsigned char pbState, struct dccFunctions * pDccFn)
+unsigned char DCCFunction(unsigned char pbState)
 {
-	if (pbState & PUSH5) {			// Set F8-12
-		SetDCCFunction(&pDccFn->group2a, pbState, PUSH0, DCCF8,  f8Toggle);	// PB5 + PB0 - F8
-		SetDCCFunction(&pDccFn->group2b, pbState, PUSH1, DCCF9,  f9Toggle);	// PB5 + PB1 - F9
-		SetDCCFunction(&pDccFn->group2b, pbState, PUSH2, DCCF10, f10Toggle);	// PB5 + PB2 - F10
-		SetDCCFunction(&pDccFn->group2b, pbState, PUSH3, DCCF11, f11Toggle);	// PB5 + PB3 - F11
-		SetDCCFunction(&pDccFn->group2b, pbState, PUSH4, DCCF12, f12Toggle);	// PB5 + PB4 - F12
+	static unsigned char dccFunction=0x80 | DCCFL;	// DCC Function Group One command, light on
 
-	} else if (pbState & PUSH4) {	// Set F4-7
-		SetDCCFunction(&pDccFn->group1,  pbState, PUSH0, DCCF4, f4Toggle);	// PB4 + PB0 - F4
-		SetDCCFunction(&pDccFn->group2a, pbState, PUSH1, DCCF5, f5Toggle);	// PB4 + PB1 - F5
-		SetDCCFunction(&pDccFn->group2a, pbState, PUSH2, DCCF6, f6Toggle);	// PB4 + PB2 - F6
-		SetDCCFunction(&pDccFn->group2a, pbState, PUSH3, DCCF7, f7Toggle);	// PB4 + PB3 - F7
+	SetDCCFunction(&dccFunction, pbState, PUSH0, DCCF2, push0Toggle);		// PB0 - F2 (horn)
+	SetDCCFunction(&dccFunction, pbState, PUSH1, DCCF1, push1Toggle);		// PB1 - F1 (bell)
+	SetDCCFunction(&dccFunction, pbState, PUSH2, DCCFL, push2Toggle);		// PB2 - FL (light)
 
-	} else {						// Set F0-F3
-		SetDCCFunction(&pDccFn->group1, pbState, PUSH0, DCCF0, f0Toggle);		// PB0 - F0 (headlight)
-		SetDCCFunction(&pDccFn->group1, pbState, PUSH1, DCCF1, f1Toggle);		// PB1 - F1 (bell)
-		SetDCCFunction(&pDccFn->group1, pbState, PUSH2, DCCF2, f2Toggle);		// PB2 - F2 (horn)
-		SetDCCFunction(&pDccFn->group1, pbState, PUSH3, DCCF3, f3Toggle);		// PB3 - F3
-	}
+	return dccFunction;
 }
+
 
 /*
  * FlashLED
@@ -451,13 +396,13 @@ void FlashLED(int speed)
  *
  * Prepare the dccBuffer structure for transmitting standard DCC commands.
  * The transmit packet includes one or two bytes for the address, an instruction byte,
- * and a checksum.  The instruction is usually speed and direction, but every 3rd
- * packet the function settings from pushbuttons are sent instead, rotating between
- * the three function group formats.
+ * and a checksum.  The instruction is usually speed and direction, but every 8th
+ * packet the pushbitton status is sent instead.
  */
-void SetupDCCBuffer(int speed, struct dccFunctions * pDccFn)
+void SetupDCCBuffer(int speed, unsigned char dccFunction)
 {
 	static int nCounter = 0;
+//	static unsigned int locoAddress=11;		// Change this as needed
 
 	dccBuffer.dccAddress0 = 0;
 	dccBuffer.dccAddress1 = locoAddress;
@@ -467,16 +412,10 @@ void SetupDCCBuffer(int speed, struct dccFunctions * pDccFn)
 		dccBufferIndex = 0;		// Start transmission at dccAddress0 for 2 address bytes
 	}
 
-	nCounter++;
-	if (nCounter == 3)			// Send function group 1, F0-F4
-		dccBuffer.dccInstruction = pDccFn->group1;
-	else if (nCounter == 6)		// Send function group 2a, F5-F8
-		dccBuffer.dccInstruction = pDccFn->group2a;
-	else if (nCounter >= 9) {	// Send function group 2b, F9-F12
-		dccBuffer.dccInstruction = pDccFn->group2b;
-		nCounter = 0;			// Repeat cycle
-
-	} else						// Send speed
+	if (nCounter++ > 6)	{		// Send pushbutton every 8th packet
+		dccBuffer.dccInstruction = dccFunction;
+		nCounter = 0;
+	} else
 		dccBuffer.dccInstruction = DCCSpeed(speed);
 
 	dccBuffer.dccChecksum = dccBuffer.dccAddress0 ^ dccBuffer.dccAddress1 ^ dccBuffer.dccInstruction;
@@ -493,10 +432,10 @@ void SetupDCCBuffer(int speed, struct dccFunctions * pDccFn)
  */
 unsigned char DCCSpeed(int speed)
 {
-	unsigned char dccSpeed=DCCSPEED;
+	unsigned char dccSpeed=0;
 
 	if (speed >= 0)
-		SET_BIT(dccSpeed, DCCFORWARDS);	// Set forwards direction bit
+		SET_BIT(dccSpeed, 0x20);	// Set forwards direction bit
 	else
 		speed = -speed;
 
@@ -504,12 +443,12 @@ unsigned char DCCSpeed(int speed)
 		speed = 31;
 
 	if (speed & 0x01)
-		SET_BIT (dccSpeed, DCCSPEEDLSB);	// Set least significant speed bit
+		SET_BIT (dccSpeed, 0x10);	// Set least significant speed bit
 
 	speed >>= 1;					// Divide by 2 for 4-bit speed
 	if (speed == 1)					// Speed 1 is an emergency stop
 		speed = 2;
-	dccSpeed |= speed;				// Set remaining speed bits
+	dccSpeed |= speed | 0x40;		// Set remaining speed bits and command bit
 
 	return dccSpeed;
 }
@@ -558,7 +497,7 @@ void CheckPowerOff(void)
 			__bis_SR_register(LPM3_bits + GIE);		// LPM3 with interrupts enabled
 			WDTCTL = WDT_ARST_250;					// Watchdog to 250ms
 			pbState = GetPushButtonState();
-		} while (!(pbState & PUSH0) || !(pbState & 0x80));	// Repeat until PB0 is pressed
+		} while (!(pbState & PUSH2) || !(pbState & 0x80));	// Repeat until PB2 is pressed
 
 		TA0CCTL2 = 0;
 		InitializeRadio();

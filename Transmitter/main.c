@@ -97,8 +97,11 @@ are permitted provided that the following conditions are met:
 #define		CLEAR_BIT(var, bits)	var &= ~(bits)
 #define		TOGGLE_BIT(var, bits)	var ^= (bits)
 
-#define		BLINK				0xffff	// LED blinking
-#define		LATCH				0xfffe	// LED on for one cycle
+#define		FLASH_ON			0	// LED steady on
+#define		FLASH_SLOW			1	// LED slow flashing
+#define		FLASH_FAST			2	// LED quick flashing
+#define		FLASH_BLINK			3	// LED blinking
+#define		FLASH_LATCH			4	// LED on for one cycle
 
 // Following constants can be modified by changing the values in the HEX file
 #pragma SET_DATA_SECTION(".infoC")
@@ -158,7 +161,7 @@ unsigned char GetPushButtonState(void);
 void SetDCCFunction(unsigned char* pDccFunction, unsigned char pbState, unsigned char pbBit, unsigned char dccBit, bool bToggle);
 void DCCFunction(unsigned char pbState, struct dccFunctions *  pDccFn);
 unsigned char DCCSpeed(int speed);
-void FlashLED(int speed);
+void FlashLED(char rate);
 void SetupDCCBuffer(int speed, struct dccFunctions * pDccFn);
 void TransmitData(void);
 void CheckPowerOff(void);
@@ -200,7 +203,7 @@ void main(void)
 		pbState = GetPushButtonState();
 		DCCFunction(pbState, &dccFn);			// Set up the DCC function settings
 		SetRadioChannel(false);
-		FlashLED(speed);
+		FlashLED(speed? (speed>0? FLASH_SLOW : FLASH_FAST) : FLASH_ON);
 		SetupDCCBuffer(speed, &dccFn);
 		TransmitData();
 		CheckPowerOff();
@@ -445,33 +448,40 @@ void DCCFunction(unsigned char pbState, struct dccFunctions * pDccFn)
  *
  * Flash the LED based on the speed & direction
  */
-void FlashLED(int speed)
+void FlashLED(char rate)
 {
 	static unsigned char ledCounter=0;
 	static bool bLatch = false;
 
-	if (speed == LATCH) {
-		bLatch = true;
-		ledCounter = 0;
-	}
-
 	CLEAR_BIT(P1OUT, LED1);				// LED off
 	ledCounter++;
-	if (speed == 0) {			// Steady on if stationary
+
+	switch (rate) {
+	case FLASH_ON:
 		SET_BIT(P1OUT, LED1);
-	} else if (speed == BLINK) {	// Program mode - blink
-		if (bLatch || ((ledCounter & 0x0f) < 2)) {
+		break;
+
+	case FLASH_SLOW:
+		if (ledCounter & 0x10)
 			SET_BIT(P1OUT, LED1);
-		}
-	} else if (speed>0) {		// Forwards: Flash slowly
-		if (ledCounter & 0x10) {
+		break;
+
+	case FLASH_FAST:
+		if (ledCounter & 0x08)
 			SET_BIT(P1OUT, LED1);
-		}
-	} else {					// Backwards: Flash quickly
-		if (ledCounter & 0x08) {
+		break;
+
+	case FLASH_BLINK:
+		if (bLatch || ((ledCounter & 0x0f) < 2))
 			SET_BIT(P1OUT, LED1);
-		}
+		break;
+
+	case FLASH_LATCH:
+		bLatch = true;
+		ledCounter = 0;
+		break;
 	}
+
 	if (bLatch && (ledCounter & 0x08))
 		bLatch = false;
 }
@@ -618,7 +628,7 @@ void ProgramSettings(void)
 		WDTCTL =  WDT_ARST_250;				// Reset Watchdog timer: ACLK 250ms
 
 		pbState = GetPushButtonState();
-		FlashLED(BLINK);
+		FlashLED(FLASH_BLINK);
 
 		if (nCount == 0) {					// Wait for all PBs to be released
 			if (pbState == 0)
@@ -653,7 +663,7 @@ void ProgramSettings(void)
 					break;
 				}
 				nCount++;
-				FlashLED(LATCH);
+				FlashLED(FLASH_LATCH);
 			}
 		}
 	} while(nCount < 6);

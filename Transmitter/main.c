@@ -97,12 +97,14 @@ are permitted provided that the following conditions are met:
 #define		CLEAR_BIT(var, bits)	var &= ~(bits)
 #define		TOGGLE_BIT(var, bits)	var ^= (bits)
 
+#define		BLINK				0xffff	// LED blinking
+#define		LATCH				0xfffe	// LED on for one cycle
 
 // Following constants can be modified by changing the values in the HEX file
 #pragma SET_DATA_SECTION(".infoC")
 
-const unsigned int locoAddress = 11;	// Change this to desired value
-const unsigned char radioChannel=2;		// Set to desired radio channel
+const unsigned int defLocoAddress = 11;	// Change this to desired value
+const unsigned char defRadioChannel=2;	// Set to desired radio channel
 
 // Select toggle or press-and-hold mode	// FWD/REV				NEUTRAL
 const bool f0Toggle = true;				// headlight			headlight
@@ -120,6 +122,11 @@ const bool f11Toggle = true;			// horn/whistle toggle	horn/whistle toggle
 const bool f12Toggle = true;			// cab lights			cab lights
 
 #pragma SET_DATA_SECTION()
+//#pragma SET_DATA_SECTION("FLASH")
+
+unsigned int locoAddress;
+unsigned char radioChannel;
+
 
 unsigned int dccTransmitData;
 unsigned int dccTransmitBit;
@@ -155,6 +162,8 @@ void FlashLED(int speed);
 void SetupDCCBuffer(int speed, struct dccFunctions * pDccFn);
 void TransmitData(void);
 void CheckPowerOff(void);
+void ProgramSettings(void);
+unsigned char GetDigit (unsigned char pbState);
 
 void SendBytes(const unsigned char* bytes, int byteCount);
 void Send2Bytes(unsigned char b1, unsigned char b2);
@@ -205,6 +214,12 @@ void Initialize(void)
 {
 	int i;
 	for (i=6665; i>0; i--) { }		// Delay loop
+
+	// If not already set, set current address & channel to defaults
+	if (locoAddress == 0)
+		locoAddress = defLocoAddress;
+	if (radioChannel == 0)
+		radioChannel = defRadioChannel;
 
 	InitializeTimers();
 	InitializePorts();
@@ -273,12 +288,15 @@ void InitializePorts(void)
  */
 void SetRadioChannel(bool bReset)
 {
-	static unsigned char currentChannel=0;
+	static unsigned char currentChannel=0xff;
 	static const unsigned char channelSelect[] =
 			{0x4B, 0x45, 0x33, 0x27, 0x1B, 0x15, 0x0F, 0x03};
 
 	if (bReset)
-		currentChannel = 0;
+		currentChannel = 0xff;
+
+	if (radioChannel >= sizeof(channelSelect))
+		radioChannel = defRadioChannel;
 
 	if (radioChannel != currentChannel) {
 	    __bic_SR_register(GIE);        	// Disable interrupts
@@ -430,11 +448,21 @@ void DCCFunction(unsigned char pbState, struct dccFunctions * pDccFn)
 void FlashLED(int speed)
 {
 	static unsigned char ledCounter=0;
+	static bool bLatch = false;
+
+	if (speed == LATCH) {
+		bLatch = true;
+		ledCounter = 0;
+	}
 
 	CLEAR_BIT(P1OUT, LED1);				// LED off
 	ledCounter++;
 	if (speed == 0) {			// Steady on if stationary
 		SET_BIT(P1OUT, LED1);
+	} else if (speed == BLINK) {	// Program mode - blink
+		if (bLatch || ((ledCounter & 0x0f) < 2)) {
+			SET_BIT(P1OUT, LED1);
+		}
 	} else if (speed>0) {		// Forwards: Flash slowly
 		if (ledCounter & 0x10) {
 			SET_BIT(P1OUT, LED1);
@@ -444,6 +472,8 @@ void FlashLED(int speed)
 			SET_BIT(P1OUT, LED1);
 		}
 	}
+	if (bLatch && (ledCounter & 0x08))
+		bLatch = false;
 }
 
 /*
@@ -560,12 +590,115 @@ void CheckPowerOff(void)
 			pbState = GetPushButtonState();
 		} while (!(pbState & PUSH0) || !(pbState & 0x80));	// Repeat until PB0 is pressed
 
+		if (pbState & PUSH5)		// If PB5 is held down when controller woken
+			ProgramSettings();		// then we enter programming mode
+
 		TA0CCTL2 = 0;
 		InitializeRadio();
 	}
 }
 
+/*
+ * ProgramSettings
+ *
+ * Wait until 5 decimal digits are entered via the pushbuttons
+ * Digits 1 & 2 set the radio channel
+ * Digits 3, 4 & 5 set the loco address
+ */
+void ProgramSettings(void)
+{
+	unsigned char pbState;
+	unsigned int nCount = 0;
+	unsigned char  i;
 
+	// Loop waiting for the radio channel and loco address to be set
+	do {
+		__bis_SR_register(LPM3_bits + GIE);	// LPM0 with interrupts enabled
+
+		WDTCTL =  WDT_ARST_250;				// Reset Watchdog timer: ACLK 250ms
+
+		pbState = GetPushButtonState();
+		FlashLED(BLINK);
+
+		if (nCount == 0) {					// Wait for all PBs to be released
+			if (pbState == 0)
+				nCount = 1;
+		}
+
+		if (nCount && (pbState & 0x80)) {	// PB state changed
+			i = GetDigit(pbState);
+
+			if (i == 0xfe){					// Set to defaults and return to normal
+				radioChannel = defRadioChannel;
+				locoAddress = defLocoAddress;
+				break;
+			}
+
+			if (i != 0xff) {					// Digit entered, store appropriately
+				switch (nCount) {
+				case 1:
+					radioChannel = i * 10;
+					break;
+				case 2:
+					radioChannel += i;
+					break;
+				case 3:
+					locoAddress = (unsigned int)(i * 100);
+					break;
+				case 4:
+					locoAddress += (unsigned int)(i * 10);
+					break;
+				case 5:
+					locoAddress += (unsigned int)i;
+					break;
+				}
+				nCount++;
+				FlashLED(LATCH);
+			}
+		}
+	} while(nCount < 6);
+}
+
+/*
+ * GetDigit
+ *
+ * Returns 0-9 based on push buttons press, or 0xff if nothing valid set
+ * Return 0xfe if both PB4 & PB5 pressed - abort and return to defaults
+ *
+ * 		Alone	+PB4	+PB5
+ * PB0	0		4		8
+ * PB1	1		5		9
+ * PB2	2		6		-1
+ * PB3	3		7		-1
+ */
+unsigned char GetDigit (unsigned char pbState)
+{
+	unsigned char i = 0xff;
+
+	if ((pbState & PUSH4) && (pbState & PUSH5))
+		return 0xfe;
+
+	if (pbState & PUSH0)
+		i = 0;
+	else if (pbState & PUSH1)
+		i = 1;
+	else if (pbState & PUSH2)
+		i = 2;
+	else if (pbState & PUSH3)
+		i = 3;
+
+	if (i != 0xff) {
+		if (pbState & PUSH4)
+			i += 4;
+		else if (pbState & PUSH5)
+			i += 8;
+	}
+
+	if (i>9)
+		i = 0xff;
+
+	return i;
+}
 /*
  * SendBytes
  *

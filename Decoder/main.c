@@ -63,13 +63,14 @@ are permitted provided that the following conditions are met:
 #define     BELL                BIT1 		//
 #define     HORN                BIT2 		//
 #define     SENSOR              BIT3		//
+#define		EXTRA_OUT			BIT3		// Alternative to sensor input
 #define     MOTORA              BIT4 		// Output to IN1 of power controller
 #define     MOTORB              BIT5		// Output to IN2 of power controller
 #define     ALTRADIO            BIT6		//
 #define     CSN                 BIT7 		// To radio
 
 // DCC definitions
-#define		DCC_BROADCAST_ADDR	0		// DCC broadcast address
+#define		DCC_BROADCAST_ADDR	0			// DCC broadcast address
 #define		DCC_INST_TYPE_MASK	0xE0		// Mask for top three bits containing instruciton type
 #define		DCC_DECODER			0x00
 #define		DCC_ADV_OP			0x20
@@ -127,6 +128,7 @@ const byte defRadioChannel2=4;	// Alternatve radio channel
 const byte fLights = 0;			// DCC F0 for front/back headlight on/off
 const byte fBell = 1;			// DCC F1 for bell
 const byte fHorn = 2;			// DCC F2 for horn
+const byte fExtra = 0xff;		// Change to 3 to use as output on DCC F3
 const byte fAuto = 5;			// DCC F5 enables 'automatic' mode
 const byte fShutdown = 6;		// DCC F6 to initiate a system shutdown
 const byte fMute = 8;			// DCC F8 turns off sound
@@ -157,6 +159,7 @@ uint receivedPackets;	// Counters for debugging
 byte ledCounter;
 uint timeoutCount;
 bool bPower = true;
+bool bOutputs = true;
 
 enum timerEnum {
 	timerNone = 0,
@@ -292,11 +295,18 @@ void InitializePorts(void)
 	P1DIR = LED1 | AUDIO | FWD_LIGHT | REV_LIGHT;	// Output ports
 
 	P2SEL = 0;							// All ports I/O
-	P2OUT = CSN | ALTRADIO | SENSOR;	// Other ports low
-	P2REN = ALTRADIO | SENSOR;			// Pullup radio select input
-	P2DIR = CAB_LIGHT | BELL | HORN | MOTORA | MOTORB | CSN;
-	P2IE  = SENSOR;						// Enable interrupts for sensor
-	P2IES = SENSOR;						// Trigger sensor interrupt on falling edge
+	if (fExtra == 0xff) {				// Use SENSOR as an input
+		P2OUT = CSN | ALTRADIO | SENSOR;	// Other ports low
+		P2REN = ALTRADIO | SENSOR;			// Pullup radio select input
+		P2DIR = CAB_LIGHT | BELL | HORN | MOTORA | MOTORB | CSN;
+		P2IE  = SENSOR | ALTRADIO;			// Enable interrupts for sensor & alt radio
+		P2IES = SENSOR | ALTRADIO;			// Trigger sensor interrupt on falling edge
+	} else {							// Use EXTRA_OUT as an output
+		P2OUT = CSN | ALTRADIO;				// Other ports low
+		P2REN = ALTRADIO;					// Pullup radio select input
+		P2DIR = CAB_LIGHT | BELL | HORN | EXTRA_OUT | MOTORA | MOTORB | CSN;
+	}
+
 	P3REN = 0xff;						// Pull up all P3 ports (not used)
 }
 
@@ -333,6 +343,7 @@ void ProcessData(void)
 
 			if ((address == locoAddress) || (address == DCC_BROADCAST_ADDR)) {
 				timeoutCount = 0;
+				bOutputs = true;
 				ProcessCommand(instruction);
 			}
 		}
@@ -429,42 +440,63 @@ int GetSpeed(byte data)
 
 void SetOutputs(void)
 {
+	if (!bOutputs)
+		return;
+
 	// Set forward & reverse lights
 	CLEAR_BIT(P1OUT, FWD_LIGHT);
 	CLEAR_BIT(P1OUT, REV_LIGHT);
-	if (dccFunctions[fLights]) {			// Lights not turned off
-		if (speed > 0)
-			SET_BIT(P1OUT, FWD_LIGHT);
-		else if ((ledCounter&0x03) == 0)	// Make forward light dim
-			SET_BIT(P1OUT, FWD_LIGHT);
+	if (fLights < sizeof(dccFunctions)) {
+		if (dccFunctions[fLights]) {			// Lights not turned off
+			if (speed > 0)
+				SET_BIT(P1OUT, FWD_LIGHT);
+			else if ((ledCounter&0x03) == 0)	// Make forward light dim
+				SET_BIT(P1OUT, FWD_LIGHT);
 
-		if (speed < 0)
-			SET_BIT(P1OUT, REV_LIGHT);
+			if (speed < 0)
+				SET_BIT(P1OUT, REV_LIGHT);
+		}
 	}
 
 	// Set audio mute
-	if (dccFunctions[fMute])
-		CLEAR_BIT(P1OUT, AUDIO);
-	else
-		SET_BIT(P1OUT, AUDIO);
+	if (fMute < sizeof(dccFunctions)) {
+		if (dccFunctions[fMute])
+			CLEAR_BIT(P1OUT, AUDIO);
+		else
+			SET_BIT(P1OUT, AUDIO);
+	}
 
 	// Set cab light
-	if (dccFunctions[fCabLight])
-		SET_BIT(P2OUT, CAB_LIGHT);
-	else
-		CLEAR_BIT(P2OUT, CAB_LIGHT);
+	if (fCabLight < sizeof(dccFunctions)) {
+		if (dccFunctions[fCabLight])
+			SET_BIT(P2OUT, CAB_LIGHT);
+		else
+			CLEAR_BIT(P2OUT, CAB_LIGHT);
+	}
 
 	// Set bell
-	if (dccFunctions[fBell])
-		SET_BIT(P2OUT, BELL);
-	else
-		CLEAR_BIT(P2OUT, BELL);
+	if (fBell < sizeof(dccFunctions)) {
+		if (dccFunctions[fBell])
+			SET_BIT(P2OUT, BELL);
+		else
+			CLEAR_BIT(P2OUT, BELL);
+	}
 
 	// Set horn
-	if (dccFunctions[fHorn])
-		SET_BIT(P2OUT, HORN);
-	else
-		CLEAR_BIT(P2OUT, HORN);
+	if (fHorn < sizeof(dccFunctions)) {
+		if (dccFunctions[fHorn])
+			SET_BIT(P2OUT, HORN);
+		else
+			CLEAR_BIT(P2OUT, HORN);
+	}
+
+	// Set extra output
+	if (fExtra < sizeof(dccFunctions)) {
+		if (dccFunctions[fExtra])
+			SET_BIT(P2OUT, EXTRA_OUT);
+		else
+			CLEAR_BIT(P2OUT, EXTRA_OUT);
+	}
 }
 
 /*
@@ -479,6 +511,9 @@ void SetOutputs(void)
  */
 void SetSpeed(void)
 {
+	if (!bOutputs)
+		return;
+
 	if (speed != desiredSpeed) {
 		if (speed < desiredSpeed) {
 			if (speed == 0)
@@ -532,7 +567,7 @@ void CheckTimeout(void)
 		dccFunctions[fShutdown] = true;	// Shut down the power
 
 	else if (timeoutCount >= 8192)	// 8192*4ms = 33s after last packet
-		speed = 0;					// Ensure we really did stop
+		OutputsOff();
 
 	else if (timeoutCount >= 1024)	// 1024*4ms = 4s
 		desiredSpeed = 0;
@@ -543,11 +578,7 @@ void CheckPowerOff(void)
 	if (dccFunctions[fShutdown]) {
 		bPower = false;					// Immediate stop and turn off all outputs
 		speed = 0;
-		CLEAR_BIT(P1OUT, LED1 | AUDIO | FWD_LIGHT | REV_LIGHT);
-		CLEAR_BIT(P1DIR, GDO0);
-		CLEAR_BIT(P2OUT, CAB_LIGHT | BELL | HORN | MOTORA | MOTORB);
-		CLEAR_BIT(P2SEL, MOTORA | MOTORB);
-
+		OutputsOff();
 		TA0CCTL1 = 0;					// Timers off
 		TA1CCTL1 = 0;
 		SendByte(CC1101_SIDLE);			// Exit TX/RX, turn off freq. syth
@@ -568,6 +599,16 @@ void CheckPowerOff(void)
 
 	}
 }
+
+void OutputsOff(void)
+{
+	bOutputs = false;
+	CLEAR_BIT(P1OUT, LED1 | AUDIO | FWD_LIGHT | REV_LIGHT);
+	CLEAR_BIT(P1DIR, GDO0);
+	CLEAR_BIT(P2OUT, CAB_LIGHT | BELL | HORN | MOTORA | MOTORB);
+	CLEAR_BIT(P2SEL, MOTORA | MOTORB);
+}
+
 /*
  * setTimer (t, mode)
  *
@@ -842,13 +883,16 @@ __interrupt void Timer1A0 (void)
 #pragma vector=PORT2_VECTOR
 __interrupt void PORT2_ISR (void)
 {
-	if (P2IFG & SENSOR) {
-		if (bPower) {
+	if (bPower) {
+		if (P2IFG & SENSOR) {
 			if (timerReason != timerStarting) {  // Ignore sensor while starting up
 				++clickCount;
 				SetTimer(1*SECONDS, timerClicking);
 			}
-		} else {
+		}
+
+	} else {		// Powered off
+		if (P2IFG & (SENSOR | ALTRADIO)) {
 			bPower = true;
 			__bic_SR_register_on_exit(LPM3_bits);        // Return to active mode
 		}

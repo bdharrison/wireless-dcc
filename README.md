@@ -18,4 +18,4 @@ file at location 1042.)
 The Decoder project is a full wireless receiver and DCC decoder, supporting direct
 connection to a DC motor and up to 7 outputs controlled by the DCC functions.  
 
-More details are in the docx files in each of the project directories.  
+See the [Wiki](./wiki) for more information.  

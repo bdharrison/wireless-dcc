@@ -4,8 +4,8 @@ Wireless DCC transmitter &amp; receiver code
 This code is for the TI Launchpad with MSP430G2553 with Anaren Radio
 See Garden Railways magazine issues April - August 2014 for details on the hardware
 This source code is intended to allow customization of the receiver and transmitter.
-For those who want to download a built version of the code, the 'Debug' directory in 
-each project contains a text file that can be loaded into the target hardware.  
+For those who want to download a built version of the code, 
+each project contains a 'hex' text file that can be loaded into the target hardware.  
 
 The Receiver project is designed for connection to a DCC decoder & sound card, 
 rather than directly to a motor and lights.  This is intended for wireless & battery 

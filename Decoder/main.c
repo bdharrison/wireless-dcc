@@ -159,7 +159,7 @@ uint receivedPackets;	// Counters for debugging
 byte ledCounter;
 uint timeoutCount;
 bool bPower = true;
-bool bOutputs = true;
+bool bOutputs = false;
 
 enum timerEnum {
 	timerNone = 0,
@@ -180,6 +180,7 @@ void ProcessCommand(byte instruction);
 void SetRadioChannel(bool bReset);
 void CheckTimeout(void);
 void CheckPowerOff(void);
+void OutputsOff(void);
 void SetTimer(uint t, enum timerEnum mode);
 void CheckTimer(void);
 void SetupRadioReceive(void);
@@ -296,7 +297,7 @@ void InitializePorts(void)
 
 	P2SEL = 0;							// All ports I/O
 	if (fExtra == 0xff) {				// Use SENSOR as an input
-		P2OUT = CSN | ALTRADIO | SENSOR;	// Other ports low
+		P2OUT = CSN | ALTRADIO;	// Other ports low
 		P2REN = ALTRADIO | SENSOR;			// Pullup radio select input
 		P2DIR = CAB_LIGHT | BELL | HORN | MOTORA | MOTORB | CSN;
 		P2IE  = SENSOR | ALTRADIO;			// Enable interrupts for sensor & alt radio
@@ -579,6 +580,8 @@ void CheckPowerOff(void)
 		bPower = false;					// Immediate stop and turn off all outputs
 		speed = 0;
 		OutputsOff();
+		CLEAR_BIT(P1OUT, LED1);
+		CLEAR_BIT(P1DIR, GDO0);
 		TA0CCTL1 = 0;					// Timers off
 		TA1CCTL1 = 0;
 		SendByte(CC1101_SIDLE);			// Exit TX/RX, turn off freq. syth
@@ -602,11 +605,12 @@ void CheckPowerOff(void)
 
 void OutputsOff(void)
 {
-	bOutputs = false;
-	CLEAR_BIT(P1OUT, LED1 | AUDIO | FWD_LIGHT | REV_LIGHT);
-	CLEAR_BIT(P1DIR, GDO0);
-	CLEAR_BIT(P2OUT, CAB_LIGHT | BELL | HORN | MOTORA | MOTORB);
-	CLEAR_BIT(P2SEL, MOTORA | MOTORB);
+	if (bOutputs) {
+		bOutputs = false;
+		CLEAR_BIT(P1OUT, AUDIO | FWD_LIGHT | REV_LIGHT);
+		CLEAR_BIT(P2OUT, CAB_LIGHT | BELL | HORN | MOTORA | MOTORB);
+		CLEAR_BIT(P2SEL, MOTORA | MOTORB);
+	}
 }
 
 /*

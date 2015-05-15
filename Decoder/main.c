@@ -143,7 +143,7 @@ const byte fCabLight = 12;		// DCC F12 turns on/off cab light
 uint locoAddress;
 int desiredSpeed=0;
 int speed=0;
-int autoSpeed = 128<<3;	// Speed when on automatic
+int autoSpeed;				// Speed when on automatic
 
 bool dccFunctions[13];
 
@@ -169,7 +169,6 @@ enum timerEnum {
 } timerReason;
 uint tCount = 0;	// Counter for timer
 byte clickCount = 0;
-bool bReverse = false;
 
 
 void Initialize(void);
@@ -449,7 +448,7 @@ void SetOutputs(void)
 	CLEAR_BIT(P1OUT, REV_LIGHT);
 	if (fLights < sizeof(dccFunctions)) {
 		if (dccFunctions[fLights]) {			// Lights not turned off
-			if (speed > 0)
+			if (speed > 1)
 				SET_BIT(P1OUT, FWD_LIGHT);
 			else if ((ledCounter&0x03) == 0)	// Make forward light dim
 				SET_BIT(P1OUT, FWD_LIGHT);
@@ -469,10 +468,10 @@ void SetOutputs(void)
 
 	// Set cab light
 	if (fCabLight < sizeof(dccFunctions)) {
-		if (dccFunctions[fCabLight])
+		CLEAR_BIT(P2OUT, CAB_LIGHT);
+		if ((dccFunctions[fCabLight])
+		&&  (!dccFunctions[fAuto] || ((speed<2)&&(speed>-2))))	// Cab light on when halted in auto
 			SET_BIT(P2OUT, CAB_LIGHT);
-		else
-			CLEAR_BIT(P2OUT, CAB_LIGHT);
 	}
 
 	// Set bell
@@ -507,7 +506,7 @@ void SetOutputs(void)
  * Note that speed jumps from zero to START_SPEED to start at level where motor will
  * turn, and when decelerating will drop from STOP_SPEED to zero to prevent motor stall
  *
- * If stopping, when speed reaches zero the bStopped flag is set and, if the bReverse
+ * If stopping, when speed reaches zero the bStopped flag is set and, if the bChangeDir
  * flag is set, then direction is toggled.
  */
 void SetSpeed(void)
@@ -633,24 +632,23 @@ void CheckTimer(void)
 		case timerClicking:  				// Did we pick up a motor control click?
 			if (speed) {    				// Clicks while running
 				if (clickCount > 1)	  		// Multiple click - reverse
-					bReverse = !bReverse;
-				clickCount = 0;
-				desiredSpeed = 0;
-				autoSpeed = speed;
-				SetTimer(20*SECONDS, timerDelaying);  // Delay then continue
+					autoSpeed = -speed;
+				else
+					autoSpeed = speed;	// Save the speed we were running at
+				desiredSpeed = (autoSpeed>0)? 1 : -1; // Ensure appropriate headlight on
+				SetTimer(10*SECONDS, timerDelaying);  // Delay then continue
 			}
+			clickCount = 0;
 			break;
 
 		case timerDelaying:
-			if (speed == 0) {
-				//Time to start up again
-				desiredSpeed = bReverse? -autoSpeed : autoSpeed;
-				SetTimer(10*SECONDS, timerStarting);
-			}
+			desiredSpeed = autoSpeed;
+			SetTimer(5*SECONDS, timerStarting);
 			break;
 
 		case timerStarting:
 			SetTimer(0,timerNone);
+			clickCount = 0;				// Ignore any clicks while starting up
 			break;
 
 		default:
@@ -891,7 +889,7 @@ __interrupt void PORT2_ISR (void)
 		if (P2IFG & SENSOR) {
 			if (timerReason != timerStarting) {  // Ignore sensor while starting up
 				++clickCount;
-				SetTimer(1*SECONDS, timerClicking);
+				SetTimer(2*SECONDS, timerClicking);
 			}
 		}
 

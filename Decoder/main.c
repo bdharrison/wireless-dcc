@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2014, Brian Harrison
+Copyright (c) 2015, Brian Harrison
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification,
@@ -31,14 +31,14 @@ are permitted provided that the following conditions are met:
  * Note radio jumper set for GD0 on P1.1
  *
  ***********************************************************************************
- * Brian Harrison April 30, 2015 - briandharrison@gmail.com
+ * Brian Harrison May, 2015 - briandharrison@gmail.com
  ***********************************************************************************
  * ACLK is at 32 kHz, 31us per cycle  (8192 cycles = 250ms)
  * SMCLK is at 8MHz, 125ns per cycle
  *
  * Watchdog timer will reset system every 250ms, unless it is reset
  * Timer0 is 125ns cycle, set to trigger on falling edge of the radio data
- * Timer1 is 250ns cycle used to wake up main loop every 4ms and for transmit timing
+ * Timer1 is 250ns cycle used to wake up main loop every 4ms
  *
  */
 
@@ -62,11 +62,11 @@ are permitted provided that the following conditions are met:
 #define     CAB_LIGHT			BIT0		//
 #define     BELL                BIT1 		//
 #define     HORN                BIT2 		//
-#define     SENSOR              BIT3		//
-#define		EXTRA_OUT			BIT3		// Alternative to sensor input
+#define     SENSOR              BIT3		// May be used as input or...
+#define		EXTRA_OUT			BIT3		// output instead of sensor
 #define     MOTORA              BIT4 		// Output to IN1 of power controller
 #define     MOTORB              BIT5		// Output to IN2 of power controller
-#define     ALTRADIO            BIT6		//
+#define     ALTRADIO            BIT6		// Ground to select alternative radio channel
 #define     CSN                 BIT7 		// To radio
 
 // DCC definitions
@@ -114,13 +114,13 @@ are permitted provided that the following conditions are met:
 #define FORWARDS	0
 #define	REVERSE		1
 
-#define	SECONDS		250			// Timer triggers loop every 4ms
+#define	SECONDS		250			// 250 * 4ms (loop time) = 1 second
 
 
 // Following constants can be modified by changing the values in the HEX file
 #pragma SET_DATA_SECTION(".infoC")
 
-const uint defLocoAddress = 11;	// Change this to desired value
+const uint defLocoAddress = 3;	// Change this to desired value
 const byte defRadioChannel1=2;	// Set to desired radio channel
 const byte defRadioChannel2=4;	// Alternatve radio channel
 
@@ -197,6 +197,10 @@ int  GetSpeed(byte data);
  * Main loop
  *
  * Initialize and loop waiting for interrupt every 4ms
+ * Loop determines if any data received from radio and, if so,
+ * processes the command.  It then checks for timed events
+ * used in automatic mode, and finally checks the timer
+ * that will shut down the decoder if no packets are received.
  */
 void main(void)
 {
@@ -226,6 +230,8 @@ void main(void)
 
 /*
  * Initialize
+ *
+ * One time system initialization after power up
  */
 void Initialize(void)
 {
@@ -310,6 +316,14 @@ void InitializePorts(void)
 	P3REN = 0xff;						// Pull up all P3 ports (not used)
 }
 
+/*
+ * unit GetPacketAddress(byte1, byte2)
+ * Returns the loco address that is the target of the received command
+ *
+ * Determine the DCC loco address received in the radio packet.
+ * Usually the loco address is in the first byte received (address < 192),
+ * but some addresses (192-231) are spread over 2 bytes
+ */
 uint GetPacketAddress(byte byte1, byte byte2)
 {
 	uint address;
@@ -320,10 +334,11 @@ uint GetPacketAddress(byte byte1, byte byte2)
 	}
 	return address;
 }
+
 /*
  * ProcessData
  *
- * Check if a packet has been received and, if so, sent it on the DCC output.
+ * Check if a packet has been received and, if so, process the DCC command
  * LED is flashed if no packets are recevied
  */
 void ProcessData(void)
@@ -361,6 +376,11 @@ void ProcessData(void)
 	ledCounter++;
 }
 
+/*
+ * ProcessCommand(instructions)
+ *
+ * Take action based on the received command
+ */
 void ProcessCommand(byte instruction)
 {
 	byte data = instruction & ~DCC_INST_TYPE_MASK;
@@ -438,6 +458,12 @@ int GetSpeed(byte data)
 	return speedTable[speed]<<3;
 }
 
+/*
+ * SetOutputs()
+ *
+ * Set the MSP output pins based on the received commands
+ *
+ */
 void SetOutputs(void)
 {
 	if (!bOutputs)
@@ -556,33 +582,45 @@ void SetSpeed(void)
  * CheckTimeout
  *
  * Make sure trains don't run away if we lose contact with the transmitter.
- * If no packets received for 4 seconds then stop.
+ * Ignore timeout if we are in automatic mode
  *
- * If no packets are recevied for 4 minutes then trigger complete shutdown
+ * If no packets received for 4 seconds then stop.
+ * If no packets received for 34 seconds then turn off all outputs
+ * If no packets are recevied for 4 minutes then trigger complete shutdown,
+ * disabling radio.  Only the sensor interrupt can wake system from this state.
  */
 void CheckTimeout(void)
 {
-	timeoutCount++;
-	if (timeoutCount >= 60000)		// 60,000 * 4ms = 4 minutes
-		dccFunctions[fShutdown] = true;	// Shut down the power
+	if (!dccFunctions[fAuto]) {
+		timeoutCount++;
+		if (timeoutCount >= 60000)		// 60,000 * 4ms = 4 minutes
+			dccFunctions[fShutdown] = true;	// Shut down the power
 
-	else if (timeoutCount >= 8192)	// 8192*4ms = 33s after last packet
-		OutputsOff();
+		else if (timeoutCount >= 8192)	// 8192*4ms = 33s after last packet
+			OutputsOff();
 
-	else if (timeoutCount >= 1024)	// 1024*4ms = 4s
-		desiredSpeed = 0;
+		else if (timeoutCount >= 1024)	// 1024*4ms = 4s
+			desiredSpeed = 0;
+	}
 }
 
+/*
+ * CheckPowerOff()
+ *
+ * If shutdown flag is set then power off all outputs, turn off watchdog timer and
+ * stop system clock, and enter loop waiting for sensor interrupt.
+ */
 void CheckPowerOff(void)
 {
 	if (dccFunctions[fShutdown]) {
 		bPower = false;					// Immediate stop and turn off all outputs
+		TA0CCTL1 = 0;					// Timers off
+		TA1CCTL1 = 0;
+		dccFunctions[fShutdown] = 0;	// Don't shutdown again after revival
 		speed = 0;
 		OutputsOff();
 		CLEAR_BIT(P1OUT, LED1);
 		CLEAR_BIT(P1DIR, GDO0);
-		TA0CCTL1 = 0;					// Timers off
-		TA1CCTL1 = 0;
 		SendByte(CC1101_SIDLE);			// Exit TX/RX, turn off freq. syth
 		SendByte(CC1101_SPWD);			// Power down when CSN high
 		WDTCTL = WDTPW + WDTHOLD;		// Turn off watchdog and wait for interrupt
@@ -592,7 +630,6 @@ void CheckPowerOff(void)
 		} while (!bPower);				// Repeat until sensor enables power
 
 		WDTCTL = WDT_ARST_250;			// Resume watchdog
-		dccFunctions[fShutdown] = 0;	// Clear the shutdown flag
 		timeoutCount = 0;
 		InitializeTimers();
 		InitializeRadio();
@@ -602,6 +639,11 @@ void CheckPowerOff(void)
 	}
 }
 
+/*
+ * OutputsOff()
+ *
+ * Turn off all outputs (conserves power)
+ */
 void OutputsOff(void)
 {
 	if (bOutputs) {
@@ -624,6 +666,12 @@ void SetTimer(uint t, enum timerEnum mode)
 	timerReason = mode;
 }
 
+/*
+ * CheckTimer()
+ *
+ * If auto mode is enabled and the timer reaches zero then take action based
+ * on the reason for the timer.
+ */
 void CheckTimer(void)
 {
 	if (dccFunctions[fAuto] && tCount && (--tCount == 0)) {
@@ -660,14 +708,14 @@ void CheckTimer(void)
 /*
  * SetRadioChannel
  *
- * Choose a readio channel based on the bits from signals RADIO0-2; default channel 2
+ * Choose a readio channel; default channel 2, or channel 4 if alt radio pin
+ * is grounded.
+ *
  * If channel has changed then reconfigure radio
  *
  * The frequencies supported by the radio:
  *   0: 921.37MHz;	 1: 919.87MHz;	 2: 915.37MHz;	 3: 912.37MHz;
  *   4: 909.37MHz;	 5: 907.87MHz;	 6: 906.37MHz;	 7: 903.37MHz;
- *   8: 926.12MHz;	 9: 924.62MHz;	10: 923.12MHz;	11: 918.12MHz;
- *  12: 916.87MHz;	13: 913.62MHz;	14: 910.87MHz;	15: 904.87MHz;
  */
 void SetRadioChannel(bool bReset)
 {
@@ -889,7 +937,7 @@ __interrupt void PORT2_ISR (void)
 		if (P2IFG & SENSOR) {
 			if (timerReason != timerStarting) {  // Ignore sensor while starting up
 				++clickCount;
-				SetTimer(2*SECONDS, timerClicking);
+				SetTimer(1*SECONDS, timerClicking);
 			}
 		}
 

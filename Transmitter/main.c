@@ -106,7 +106,7 @@ are permitted provided that the following conditions are met:
 // Following constants can be modified by changing the values in the HEX file
 #pragma SET_DATA_SECTION(".infoC")
 
-const unsigned int defLocoAddress = 11;	// Change this to desired value
+const unsigned int defLocoAddress = 3;	// Change this to desired value
 const unsigned char defRadioChannel=2;	// Set to desired radio channel
 
 // Select toggle or press-and-hold mode	// FWD/REV				NEUTRAL
@@ -194,7 +194,7 @@ void main(void)
 	while(1) {
 		__bis_SR_register(CPUOFF + GIE);        // LPM0 with interrupts enabled
     											// Wait for timer 1 CCR1 to turn on CPU
-    
+
 		WDTCTL =  WDT_ARST_250;					// Reset Watchdog timer: ACLK 250ms
 
 		SendByte(CC1101_STX);					// In IDLE state: enable TX
@@ -239,7 +239,7 @@ void InitializeTimers(void)
 
     // System will reset if the watchdog is not reset every 250ms
     WDTCTL =  WDT_ARST_250;				// Reset Watchdog timer: ACLK 250ms
-    
+
     // Basic system clock at 8MHz
     SET_BIT(BCSCTL3, LFXT1S_2);				// VOCLK
     DCOCTL = 0;

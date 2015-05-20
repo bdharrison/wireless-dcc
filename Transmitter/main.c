@@ -45,6 +45,8 @@ are permitted provided that the following conditions are met:
 #include  "msp430g2553.h"
 #include  "CC1101.h"
 
+#define		memcpy		__builtin_memcpy
+
 // P1 Connections
 #define     LED1                  BIT0	// out: Green LED and GDO2
 #define     POTH                  BIT1	// out: Pot high
@@ -103,33 +105,42 @@ are permitted provided that the following conditions are met:
 #define		FLASH_BLINK			3	// LED blinking
 #define		FLASH_LATCH			4	// LED on for one cycle
 
+
+struct configVariables {
+	unsigned int locoAddress;	// Change this to desired value
+	unsigned char radioChannel;	// Set to desired radio channel
+
+	// Select toggle or press-and-hold mode	// FWD/REV				NEUTRAL
+	bool f0Toggle;			// headlight			headlight
+	bool f1Toggle;			// bell					bell
+	bool f2Toggle;			// whistle				whistle
+	bool f3Toggle;			// coupler				coupler
+	bool f4Toggle;			// blower hiss			blower hiss
+	bool f5Toggle;			// dynamic brake		dynamic brake
+	bool f6Toggle;			// doppler on/off		start-up
+	bool f7Toggle;			// squeal brakes		cylinder cocks arm
+	bool f8Toggle;			// audio mute			audio mute
+	bool f9Toggle;			// very heavy load		disconnect/standby/shutdown
+	bool f10Toggle;			// speed report			status report
+	bool f11Toggle;			// horn/whistle toggle	horn/whistle toggle
+	bool f12Toggle;			// cab lights			cab lights
+};
+
 // Following constants can be modified by changing the values in the HEX file
+// Or by entering the 'settings' mode
 #pragma SET_DATA_SECTION(".infoC")
 
-const unsigned int defLocoAddress = 3;	// Change this to desired value
-const unsigned char defRadioChannel=2;	// Set to desired radio channel
-
-// Select toggle or press-and-hold mode	// FWD/REV				NEUTRAL
-const bool f0Toggle = true;				// headlight			headlight
-const bool f1Toggle = false;			// bell					bell
-const bool f2Toggle = false;			// whistle				whistle
-const bool f3Toggle = false;			// coupler				coupler
-const bool f4Toggle = true;				// blower hiss			blower hiss
-const bool f5Toggle = true;				// dynamic brake		dynamic brake
-const bool f6Toggle = false;			// doppler on/off		start-up
-const bool f7Toggle = false;			// squeal brakes		cylinder cocks arm
-const bool f8Toggle = true;				// audio mute			audio mute
-const bool f9Toggle = true;				// very heavy load		disconnect/standby/shutdown
-const bool f10Toggle = false;			// speed report			status report
-const bool f11Toggle = true;			// horn/whistle toggle	horn/whistle toggle
-const bool f12Toggle = true;			// cab lights			cab lights
+const struct configVariables flashcv = {
+		3, 								// Loco Address
+		2,								// Radio Channel
+		true, false, false, false,		// Toggle flags F0-F3
+		true, true, false, false,		// Toggle flags F4-F7
+		true, true, false, true, true	// Toggle flags F8-F12
+};
 
 #pragma SET_DATA_SECTION()
-//#pragma SET_DATA_SECTION("FLASH")
 
-unsigned int locoAddress;
-unsigned char radioChannel;
-
+struct configVariables cv;
 
 unsigned int dccTransmitData;
 unsigned int dccTransmitBit;
@@ -167,6 +178,7 @@ void TransmitData(void);
 void CheckPowerOff(void);
 void ProgramSettings(void);
 unsigned char GetDigit (unsigned char pbState);
+void UpdateFlash(void);
 
 void SendBytes(const unsigned char* bytes, int byteCount);
 void Send2Bytes(unsigned char b1, unsigned char b2);
@@ -216,13 +228,11 @@ void main(void)
 void Initialize(void)
 {
 	int i;
+
 	for (i=6665; i>0; i--) { }		// Delay loop
 
-	// If not already set, set current address & channel to defaults
-	if (locoAddress == 0)
-		locoAddress = defLocoAddress;
-	if (radioChannel == 0)
-		radioChannel = defRadioChannel;
+	// Set up config variables from flash memory
+	memcpy(&cv, &flashcv, sizeof(struct configVariables));
 
 	InitializeTimers();
 	InitializePorts();
@@ -298,15 +308,15 @@ void SetRadioChannel(bool bReset)
 	if (bReset)
 		currentChannel = 0xff;
 
-	if (radioChannel >= sizeof(channelSelect))
-		radioChannel = defRadioChannel;
+	if (cv.radioChannel >= sizeof(channelSelect))
+		cv.radioChannel = 0;
 
-	if (radioChannel != currentChannel) {
+	if (cv.radioChannel != currentChannel) {
 	    __bic_SR_register(GIE);        	// Disable interrupts
 		SendByte(CC1101_SIDLE);			// Exit RX/TX, turn off frequency synthesizer
-		Send2Bytes(CC1101_REG_CHANNR, channelSelect[radioChannel]);	// Channel number
+		Send2Bytes(CC1101_REG_CHANNR, channelSelect[cv.radioChannel]);	// Channel number
 		SendByte(CC1101_STX);			// In IDLE state: enable TX
-		currentChannel = radioChannel;
+		currentChannel = cv.radioChannel;
 	    __bis_SR_register(GIE);        	// Enable interrupts
 	}
 
@@ -423,23 +433,23 @@ void SetDCCFunction(unsigned char* pDccFunction, unsigned char pbState, unsigned
 void DCCFunction(unsigned char pbState, struct dccFunctions * pDccFn)
 {
 	if (pbState & PUSH5) {			// Set F8-12
-		SetDCCFunction(&pDccFn->group2a, pbState, PUSH0, DCCF8,  f8Toggle);	// PB5 + PB0 - F8
-		SetDCCFunction(&pDccFn->group2b, pbState, PUSH1, DCCF9,  f9Toggle);	// PB5 + PB1 - F9
-		SetDCCFunction(&pDccFn->group2b, pbState, PUSH2, DCCF10, f10Toggle);	// PB5 + PB2 - F10
-		SetDCCFunction(&pDccFn->group2b, pbState, PUSH3, DCCF11, f11Toggle);	// PB5 + PB3 - F11
-		SetDCCFunction(&pDccFn->group2b, pbState, PUSH4, DCCF12, f12Toggle);	// PB5 + PB4 - F12
+		SetDCCFunction(&pDccFn->group2a, pbState, PUSH0, DCCF8,  cv.f8Toggle);	// PB5 + PB0 - F8
+		SetDCCFunction(&pDccFn->group2b, pbState, PUSH1, DCCF9,  cv.f9Toggle);	// PB5 + PB1 - F9
+		SetDCCFunction(&pDccFn->group2b, pbState, PUSH2, DCCF10, cv.f10Toggle);	// PB5 + PB2 - F10
+		SetDCCFunction(&pDccFn->group2b, pbState, PUSH3, DCCF11, cv.f11Toggle);	// PB5 + PB3 - F11
+		SetDCCFunction(&pDccFn->group2b, pbState, PUSH4, DCCF12, cv.f12Toggle);	// PB5 + PB4 - F12
 
 	} else if (pbState & PUSH4) {	// Set F4-7
-		SetDCCFunction(&pDccFn->group1,  pbState, PUSH0, DCCF4, f4Toggle);	// PB4 + PB0 - F4
-		SetDCCFunction(&pDccFn->group2a, pbState, PUSH1, DCCF5, f5Toggle);	// PB4 + PB1 - F5
-		SetDCCFunction(&pDccFn->group2a, pbState, PUSH2, DCCF6, f6Toggle);	// PB4 + PB2 - F6
-		SetDCCFunction(&pDccFn->group2a, pbState, PUSH3, DCCF7, f7Toggle);	// PB4 + PB3 - F7
+		SetDCCFunction(&pDccFn->group1,  pbState, PUSH0, DCCF4, cv.f4Toggle);	// PB4 + PB0 - F4
+		SetDCCFunction(&pDccFn->group2a, pbState, PUSH1, DCCF5, cv.f5Toggle);	// PB4 + PB1 - F5
+		SetDCCFunction(&pDccFn->group2a, pbState, PUSH2, DCCF6, cv.f6Toggle);	// PB4 + PB2 - F6
+		SetDCCFunction(&pDccFn->group2a, pbState, PUSH3, DCCF7, cv.f7Toggle);	// PB4 + PB3 - F7
 
 	} else {						// Set F0-F3
-		SetDCCFunction(&pDccFn->group1, pbState, PUSH0, DCCF0, f0Toggle);		// PB0 - F0 (headlight)
-		SetDCCFunction(&pDccFn->group1, pbState, PUSH1, DCCF1, f1Toggle);		// PB1 - F1 (bell)
-		SetDCCFunction(&pDccFn->group1, pbState, PUSH2, DCCF2, f2Toggle);		// PB2 - F2 (horn)
-		SetDCCFunction(&pDccFn->group1, pbState, PUSH3, DCCF3, f3Toggle);		// PB3 - F3
+		SetDCCFunction(&pDccFn->group1, pbState, PUSH0, DCCF0, cv.f0Toggle);		// PB0 - F0 (headlight)
+		SetDCCFunction(&pDccFn->group1, pbState, PUSH1, DCCF1, cv.f1Toggle);		// PB1 - F1 (bell)
+		SetDCCFunction(&pDccFn->group1, pbState, PUSH2, DCCF2, cv.f2Toggle);		// PB2 - F2 (horn)
+		SetDCCFunction(&pDccFn->group1, pbState, PUSH3, DCCF3, cv.f3Toggle);		// PB3 - F3
 	}
 }
 
@@ -500,10 +510,10 @@ void SetupDCCBuffer(int speed, struct dccFunctions * pDccFn)
 	static int nCounter = 0;
 
 	dccBuffer.dccAddress0 = 0;
-	dccBuffer.dccAddress1 = locoAddress;
+	dccBuffer.dccAddress1 = cv.locoAddress;
 	dccBufferIndex = 1;			// Start transmission at dccAddress1
-	if (locoAddress >= 0x64) {	// Loco has a 14-bit address?
-		dccBuffer.dccAddress0 = locoAddress>>8 | 0xC0;	// Set top two bits of most significant byte
+	if (cv.locoAddress >= 0x64) {	// Loco has a 14-bit address?
+		dccBuffer.dccAddress0 = cv.locoAddress>>8 | 0xC0;	// Set top two bits of most significant byte
 		dccBufferIndex = 0;		// Start transmission at dccAddress0 for 2 address bytes
 	}
 
@@ -639,27 +649,27 @@ void ProgramSettings(void)
 			i = GetDigit(pbState);
 
 			if (i == 0xfe){					// Set to defaults and return to normal
-				radioChannel = defRadioChannel;
-				locoAddress = defLocoAddress;
+				cv.radioChannel = flashcv.radioChannel;
+				cv.locoAddress = flashcv.locoAddress;
 				break;
 			}
 
-			if (i != 0xff) {					// Digit entered, store appropriately
+			if (i != 0xff) {				// Digit entered, store appropriately
 				switch (nCount) {
 				case 1:
-					radioChannel = i * 10;
+					cv.radioChannel = i * 10;
 					break;
 				case 2:
-					radioChannel += i;
+					cv.radioChannel += i;
 					break;
 				case 3:
-					locoAddress = (unsigned int)(i * 100);
+					cv.locoAddress = (unsigned int)(i * 100);
 					break;
 				case 4:
-					locoAddress += (unsigned int)(i * 10);
+					cv.locoAddress += (unsigned int)(i * 10);
 					break;
 				case 5:
-					locoAddress += (unsigned int)i;
+					cv.locoAddress += (unsigned int)i;
 					break;
 				}
 				nCount++;
@@ -667,6 +677,10 @@ void ProgramSettings(void)
 			}
 		}
 	} while(nCount < 6);
+
+	if (nCount == 6) {	// Entered 6 digits, so save these to flash
+		UpdateFlash();
+	}
 }
 
 /*
@@ -708,6 +722,33 @@ unsigned char GetDigit (unsigned char pbState)
 		i = 0xff;
 
 	return i;
+}
+
+/*
+ * UpdateFlash
+ *
+ * Write the current settings from cv to the flash memory flashcv
+ */
+void UpdateFlash(void)
+{
+	__bic_SR_register(GIE);        	// interrupts disabled
+	WDTCTL = WDTPW + WDTHOLD;		// Turn off watchdog
+
+	FCTL1 = FWKEY | ERASE;			// Erase individual 64-byte segment
+	FCTL2 = FWKEY | FSSEL_1 | 16;	// MCLK(8MHz) / (16+1) = 470kHz flash clock
+	FCTL3 = FWKEY;					// Unlock segment
+
+	*((unsigned char *)&flashcv) = 0;				// Dummy write to initiate segment erase
+
+	FCTL1 = FWKEY | WRT;			// Write
+
+	memcpy((void*)&flashcv, &cv, sizeof(struct configVariables));
+
+	FCTL1 = FWKEY;					// End writing
+	FCTL3 = FWKEY | LOCK;			// Lock segment
+
+    WDTCTL =  WDT_ARST_250;			// Reset Watchdog timer: ACLK 250ms
+	__bis_SR_register(GIE);    		// interrupts enabled
 }
 /*
  * SendBytes

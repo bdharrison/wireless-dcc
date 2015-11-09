@@ -60,7 +60,7 @@ struct buffer {
 	unsigned int count;
 } receiveBuf, transmitBuf;
 
-unsigned char currentChannel;
+unsigned char currentChannel=0xff;
 unsigned int receiveData, receiveBit;
 enum recState { preamble=0, getbyte=1, startendbit=2} receiveState;
 unsigned int transmitData, transmitBit, transmitCount;

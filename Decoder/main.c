@@ -48,26 +48,39 @@ are permitted provided that the following conditions are met:
 #define byte	unsigned char
 #define uint	unsigned int
 
+/*
+ * Map the output pins the same as the GRW magazine article hardware:
+ * J1-4 (P1.2) F0  FWD_LIGHT
+ * J1-5 (P1.3) F1  BELL
+ * J1-6 (P1.4) F8  Audio Mute
+ * J1-8 (P2.0) F12 CAB_LIGHT
+ * J1-9 (P2.1) F0  REV_LIGHT (based on direction)
+ * J1-10(P2.2) F3  EXTRA_OUT
+ * J2-2 (P2.6) F2  HORN
+ * J2-10(P2.3)     SENSOR or Jumper for Alt radio channel
+ */
+
 // P1 Connections
 #define     LED1                BIT0		// Steady when receiving, otherwise flashes
 #define     GDO0                BIT1
-#define     AUDIO	            BIT2
-#define     FWD_LIGHT           BIT3
-#define     REV_LIGHT         	BIT4
+#define     FWD_LIGHT           BIT2
+#define     BELL                BIT3
+#define     AUDIO	         	BIT4
 #define     SCLK                BIT5		// To radio
 #define     MISO                BIT6		// To radio
 #define     MOSI                BIT7		// To radio
 
 // P2 connections
 #define     CAB_LIGHT			BIT0		//
-#define     BELL                BIT1 		//
-#define     HORN                BIT2 		//
-#define     SENSOR              BIT3		// May be used as input or...
-#define		EXTRA_OUT			BIT3		// output instead of sensor
+#define     REV_LIGHT           BIT1 		//
+#define     EXTRA_OUT           BIT2 		//
+#define     SENSOR              BIT3		// Input used as sensor or ...
+#define		ALTRADIO			BIT3		// Inoput to select alternative radio channel
 #define     MOTORA              BIT4 		// Output to IN1 of power controller
 #define     MOTORB              BIT5		// Output to IN2 of power controller
-#define     ALTRADIO            BIT6		// Ground to select alternative radio channel
+#define     HORN                BIT6		// Ground to select alternative radio channel
 #define     CSN                 BIT7 		// To radio
+
 
 // DCC definitions
 #define		DCC_BROADCAST_ADDR	0			// DCC broadcast address
@@ -104,6 +117,17 @@ are permitted provided that the following conditions are met:
 #define		CLEAR_BIT(var, bits)	var &= ~(bits)
 #define		TOGGLE_BIT(var, bits)	var ^= (bits)
 
+// Is the audio triggered when signal is low rather than high?
+#define LOW_ON
+#ifdef LOW_ON
+#define		SOUND_ON(var, bits)		CLEAR_BIT(var, bits)
+#define		SOUND_OFF(var, bits)	SET_BIT(var, bits)
+
+#else
+#define		SOUND_ON(var, bits)		SET_BIT(var, bits)
+#define		SOUND_OFF(var, bits)	CLEAR_BIT(var, bits)
+#endif
+
 // Constants for motor control
 #define	START_SPEED	50
 #define STOP_SPEED	40
@@ -122,18 +146,20 @@ are permitted provided that the following conditions are met:
 
 const uint defLocoAddress = 3;	// Change this to desired value
 const byte defRadioChannel1=2;	// Set to desired radio channel
-const byte defRadioChannel2=4;	// Alternatve radio channel
+const byte defRadioChannel2=0xff;	// Alternatve radio channel
+									// set to 0xff to use sensor
 
 // Map the decoder capabilities to DCC functions
-const byte fLights = 0;			// DCC F0 for front/back headlight on/off
+const byte fLights = 0;			// DCC F0 for headlight on/off
 const byte fBell = 1;			// DCC F1 for bell
 const byte fHorn = 2;			// DCC F2 for horn
-const byte fExtra = 0xff;		// Change to 3 to use as output on DCC F3
+const byte fExtra = 8;			// Same as audio mute, use for running engine sound
 const byte fAuto = 5;			// DCC F5 enables 'automatic' mode
 const byte fShutdown = 6;		// DCC F6 to initiate a system shutdown
 const byte fMute = 8;			// DCC F8 turns off sound
 const byte fHeavy = 9;			// DCC F9 enables 'heavy' momentum
 const byte fCabLight = 12;		// DCC F12 turns on/off cab light
+const byte fRevLight = 0xff;	// Set to 0xff for front/rear headlight operation
 
 
 #pragma SET_DATA_SECTION()
@@ -159,13 +185,17 @@ uint receivedPackets;	// Counters for debugging
 byte ledCounter;
 uint timeoutCount;
 bool bPower = true;
-bool bOutputs = false;
+bool bOutputs = true;
 
 enum timerEnum {
 	timerNone = 0,
 	timerClicking = 1,
 	timerDelaying = 2,
-	timerStarting = 3
+	timerStarting = 3,
+	timerStopping = 4,
+	timerReady = 5,
+	timerRunning = 6,
+	timerHorn = 7
 } timerReason;
 uint tCount = 0;	// Counter for timer
 byte clickCount = 0;
@@ -298,20 +328,16 @@ void InitializePorts(void)
 	P1REN = GDO0;						// Pull GDO0 up
 	P1SEL  = MOSI | MISO | SCLK | GDO0;	// Primary peripheral GDO0,
 	P1SEL2 = MOSI | MISO | SCLK;		// secondary for MOSI, MISO, SCLK
-	P1DIR = LED1 | AUDIO | FWD_LIGHT | REV_LIGHT;	// Output ports
+	P1DIR = LED1 | AUDIO | FWD_LIGHT | BELL;	// Output ports
 
 	P2SEL = 0;							// All ports I/O
-	if (fExtra == 0xff) {				// Use SENSOR as an input
-		P2OUT = CSN | ALTRADIO;	// Other ports low
-		P2REN = ALTRADIO | SENSOR;			// Pullup radio select input
-		P2DIR = CAB_LIGHT | BELL | HORN | MOTORA | MOTORB | CSN;
-		P2IE  = SENSOR | ALTRADIO;			// Enable interrupts for sensor & alt radio
-		P2IES = SENSOR | ALTRADIO;			// Trigger sensor interrupt on falling edge
-	} else {							// Use EXTRA_OUT as an output
-		P2OUT = CSN | ALTRADIO;				// Other ports low
-		P2REN = ALTRADIO;					// Pullup radio select input
-		P2DIR = CAB_LIGHT | BELL | HORN | EXTRA_OUT | MOTORA | MOTORB | CSN;
-	}
+	P2OUT = CSN | ALTRADIO;				// Other ports low
+	P2REN = ALTRADIO;					// Pullup radio select input
+	P2DIR = CAB_LIGHT | REV_LIGHT | EXTRA_OUT | HORN | MOTORA | MOTORB | CSN;
+	P2IE  = SENSOR;						// Enable interrupts for sensor & alt radio
+	P2IES = SENSOR;						// Trigger sensor interrupt on falling edge
+
+	OutputsOff();
 
 	P3REN = 0xff;						// Pull up all P3 ports (not used)
 }
@@ -466,62 +492,122 @@ int GetSpeed(byte data)
  */
 void SetOutputs(void)
 {
+	bool bMute = false;
+
 	if (!bOutputs)
 		return;
 
-	// Set forward & reverse lights
-	CLEAR_BIT(P1OUT, FWD_LIGHT);
-	CLEAR_BIT(P1OUT, REV_LIGHT);
 	if (fLights < sizeof(dccFunctions)) {
-		if (dccFunctions[fLights]) {			// Lights not turned off
-			if (speed > 1)
-				SET_BIT(P1OUT, FWD_LIGHT);
-			else if ((ledCounter&0x03) == 0)	// Make forward light dim
-				SET_BIT(P1OUT, FWD_LIGHT);
+		if (fRevLight == 0xff) {	// Use loco direction to control fwd/rev headlight
+			CLEAR_BIT(P1OUT, FWD_LIGHT);
+			CLEAR_BIT(P2OUT, REV_LIGHT);
+			if (dccFunctions[fLights]) {			// Lights turned on
+				if (speed > 0)
+					SET_BIT(P1OUT, FWD_LIGHT);
+				else if ((ledCounter&0x03) == 0)	// Make forward light dim
+					SET_BIT(P1OUT, FWD_LIGHT);
 
-			if (speed < 0)
-				SET_BIT(P1OUT, REV_LIGHT);
+				if ((speed < 0) || (autoSpeed < 0))
+					SET_BIT(P2OUT, REV_LIGHT);
+			}
+
+		} else {					// Ignore direction, turn fwd headlight on or off
+			if (dccFunctions[fLights])
+				SET_BIT(P1OUT, FWD_LIGHT);
+			else
+				CLEAR_BIT(P1OUT, FWD_LIGHT);
 		}
+	}
+
+	if (fRevLight < sizeof(dccFunctions)) {
+		if (dccFunctions[fRevLight])
+			SET_BIT(P1OUT, REV_LIGHT);
+		else
+			CLEAR_BIT(P1OUT, REV_LIGHT);
 	}
 
 	// Set audio mute
 	if (fMute < sizeof(dccFunctions)) {
-		if (dccFunctions[fMute])
-			CLEAR_BIT(P1OUT, AUDIO);
-		else
-			SET_BIT(P1OUT, AUDIO);
+		if (dccFunctions[fMute]) {
+			bMute = true;
+			SOUND_OFF(P1OUT, AUDIO);
+			if (fExtra == fMute)		// Extra output used for audio?
+				SOUND_OFF(P2OUT, EXTRA_OUT);
+		} else {
+			if (fExtra == fMute) {		// Extra output used for audio?
+				if (speed == 0) {
+					SOUND_ON(P1OUT, AUDIO);		// Idle sound
+					SOUND_OFF(P2OUT, EXTRA_OUT);
+				} else {
+					SOUND_ON(P2OUT, EXTRA_OUT);	// Running sound
+					SOUND_OFF(P1OUT, AUDIO);
+				}
+			} else
+				SOUND_ON(P1OUT, AUDIO);
+		}
 	}
 
 	// Set cab light
 	if (fCabLight < sizeof(dccFunctions)) {
-		CLEAR_BIT(P2OUT, CAB_LIGHT);
-		if ((dccFunctions[fCabLight])
-		&&  (!dccFunctions[fAuto] || ((speed<2)&&(speed>-2))))	// Cab light on when halted in auto
+		if (dccFunctions[fCabLight])
 			SET_BIT(P2OUT, CAB_LIGHT);
+		else
+			CLEAR_BIT(P2OUT, CAB_LIGHT);
 	}
 
 	// Set bell
 	if (fBell < sizeof(dccFunctions)) {
 		if (dccFunctions[fBell])
-			SET_BIT(P2OUT, BELL);
+			SOUND_ON(P1OUT, BELL);
 		else
-			CLEAR_BIT(P2OUT, BELL);
+			SOUND_OFF(P1OUT, BELL);
 	}
 
 	// Set horn
 	if (fHorn < sizeof(dccFunctions)) {
 		if (dccFunctions[fHorn])
-			SET_BIT(P2OUT, HORN);
+			SOUND_ON(P2OUT, HORN);
 		else
-			CLEAR_BIT(P2OUT, HORN);
+			SOUND_OFF(P2OUT, HORN);
 	}
 
-	// Set extra output
-	if (fExtra < sizeof(dccFunctions)) {
+	// Set extra output, if not used with audio mute
+	if ((fExtra < sizeof(dccFunctions)) && (fExtra != fMute)) {
 		if (dccFunctions[fExtra])
 			SET_BIT(P2OUT, EXTRA_OUT);
 		else
 			CLEAR_BIT(P2OUT, EXTRA_OUT);
+	}
+
+	// Auto mode starting or stopping will turn on bell, horn and cab light
+	if (fAuto < sizeof(dccFunctions)) {
+		if (dccFunctions[fAuto]) {
+			switch (timerReason) {
+
+			case timerStarting:
+			case timerStopping:
+				if (!bMute)
+					SOUND_ON(P1OUT, BELL);
+				break;
+
+			case timerClicking:
+			case timerReady:
+			case timerHorn:
+				if (!bMute)
+					SOUND_ON(P2OUT, HORN);
+				break;
+
+			case timerDelaying:
+				SET_BIT(P2OUT, CAB_LIGHT);
+				break;
+
+			default:
+				break;
+			}
+
+		} else {	// Not in auto mode
+			autoSpeed = 0;
+		}
 	}
 }
 
@@ -591,7 +677,7 @@ void SetSpeed(void)
  */
 void CheckTimeout(void)
 {
-	if (!dccFunctions[fAuto]) {
+	if (!((fAuto < sizeof(dccFunctions)) && dccFunctions[fAuto])) {
 		timeoutCount++;
 		if (timeoutCount >= 60000)		// 60,000 * 4ms = 4 minutes
 			dccFunctions[fShutdown] = true;	// Shut down the power
@@ -612,7 +698,7 @@ void CheckTimeout(void)
  */
 void CheckPowerOff(void)
 {
-	if (dccFunctions[fShutdown]) {
+	if ((fShutdown < sizeof(dccFunctions)) && dccFunctions[fShutdown]) {
 		bPower = false;					// Immediate stop and turn off all outputs
 		TA0CCTL1 = 0;					// Timers off
 		TA1CCTL1 = 0;
@@ -648,8 +734,15 @@ void OutputsOff(void)
 {
 	if (bOutputs) {
 		bOutputs = false;
-		CLEAR_BIT(P1OUT, AUDIO | FWD_LIGHT | REV_LIGHT);
-		CLEAR_BIT(P2OUT, CAB_LIGHT | BELL | HORN | MOTORA | MOTORB);
+		CLEAR_BIT(P1OUT, FWD_LIGHT);
+		SOUND_OFF(P1OUT, AUDIO | BELL);
+		CLEAR_BIT(P2OUT, CAB_LIGHT | REV_LIGHT | MOTORA | MOTORB);
+		SOUND_OFF(P2OUT, HORN);
+		if (fExtra == fMute)	// Use extra out as sound
+			SOUND_OFF(P2OUT, EXTRA_OUT);
+		else
+			CLEAR_BIT(P2OUT, EXTRA_OUT);
+
 		CLEAR_BIT(P2SEL, MOTORA | MOTORB);
 	}
 }
@@ -674,35 +767,55 @@ void SetTimer(uint t, enum timerEnum mode)
  */
 void CheckTimer(void)
 {
-	if (dccFunctions[fAuto] && tCount && (--tCount == 0)) {
-		switch (timerReason) {
+	if ((fAuto < sizeof(dccFunctions)) && dccFunctions[fAuto]) {
+	    if (tCount && (--tCount == 0)) {
+			switch (timerReason) {
 
-		case timerClicking:  				// Did we pick up a motor control click?
-			if (speed) {    				// Clicks while running
-				if (clickCount > 1)	  		// Multiple click - reverse
-					autoSpeed = -speed;
-				else
-					autoSpeed = speed;	// Save the speed we were running at
-				desiredSpeed = (autoSpeed>0)? 1 : -1; // Ensure appropriate headlight on
-				SetTimer(10*SECONDS, timerDelaying);  // Delay then continue
+			case timerClicking:  				// Did we pick up a motor control click?
+				if (speed) {    				// Clicks while running
+					if (clickCount > 1)	  		// Multiple click - reverse
+						autoSpeed = -speed;
+					else
+						autoSpeed = speed;	// Save the speed we were running at
+					desiredSpeed = 0;
+					SetTimer(5*SECONDS, timerStopping);  // Stop then wait
+				}
+				clickCount = 0;
+				break;
+
+			case timerStopping:
+				SetTimer(5*SECONDS, timerDelaying);  // Delay then continue
+				break;
+
+			case timerDelaying:
+				SetTimer(3*SECONDS, timerReady);
+				break;
+
+			case timerReady:
+				desiredSpeed = autoSpeed;
+				SetTimer(5*SECONDS, timerStarting);
+				break;
+
+			case timerStarting:
+				SetTimer(30*SECONDS,timerRunning);
+				clickCount = 0;				// Ignore any clicks while starting up
+				break;
+
+			case timerRunning:
+				SetTimer(1*SECONDS, timerHorn);
+				break;
+
+			case timerHorn:
+			case timerNone:
+				SetTimer(30*SECONDS, timerRunning);
+				break;
+
+			default:
+				break;
 			}
-			clickCount = 0;
-			break;
-
-		case timerDelaying:
-			desiredSpeed = autoSpeed;
-			SetTimer(5*SECONDS, timerStarting);
-			break;
-
-		case timerStarting:
-			SetTimer(0,timerNone);
-			clickCount = 0;				// Ignore any clicks while starting up
-			break;
-
-		default:
-			break;
-		}
-	}
+	    }
+	} else		// Not in automatic mode
+		timerReason = timerNone;
 }
 
 /*
@@ -719,7 +832,7 @@ void CheckTimer(void)
  */
 void SetRadioChannel(bool bReset)
 {
-	static byte currentChannel;
+	static byte currentChannel=0xff;
 	static const byte channelSelect[] =
 			{0x4B, 0x45, 0x33, 0x27, 0x1B, 0x15, 0x0F, 0x03};
 	byte channel;
@@ -727,7 +840,9 @@ void SetRadioChannel(bool bReset)
 	if (bReset)
 		currentChannel = 0xff;
 
-	channel = (P2IN & ALTRADIO)? defRadioChannel1 : defRadioChannel2;
+	channel = defRadioChannel1;
+	if ((defRadioChannel2 != 0xff) && !(P2IN & ALTRADIO))
+		channel = defRadioChannel2;
 
 	if (channel != currentChannel) {
 	    __bic_SR_register(GIE);        	// Disable interrupts
@@ -942,7 +1057,7 @@ __interrupt void PORT2_ISR (void)
 		}
 
 	} else {		// Powered off
-		if (P2IFG & (SENSOR | ALTRADIO)) {
+		if (P2IFG & SENSOR) {
 			bPower = true;
 			__bic_SR_register_on_exit(LPM3_bits);        // Return to active mode
 		}

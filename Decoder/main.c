@@ -118,7 +118,7 @@ are permitted provided that the following conditions are met:
 #define		TOGGLE_BIT(var, bits)	var ^= (bits)
 
 // Is the audio triggered when signal is low rather than high?
-#define LOW_ON
+//#define LOW_ON
 #ifdef LOW_ON
 #define		SOUND_ON(var, bits)		CLEAR_BIT(var, bits)
 #define		SOUND_OFF(var, bits)	SET_BIT(var, bits)

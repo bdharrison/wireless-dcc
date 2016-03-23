@@ -22,4 +22,7 @@ file at location 1042.)
 The [Decoder](https://github.com/bdharrison/wireless-dcc/wiki/Decoder) project is a full wireless receiver and DCC decoder, supporting direct
 connection to a DC motor and up to 7 outputs controlled by the DCC functions.  
 
+The [WebController](https://github.com/bdharrison/wireless-dcc/wiki/WebController) project has a modified version of the Transmitter project that accepts commands over the serial port instead of using the input buttons and potentiometer. This can run on the unmodified AIR booster pack. A simple example file allows the serial port to be connected to a Photon board from Particle, enabling DCC commands to be sent via web requests. An example HTML file is provided to demonstrate the commands; note that this file must be edited to provide your device ID and access token.
+
+
 See the [Wiki](https://github.com/bdharrison/wireless-dcc/wiki) for more information.  

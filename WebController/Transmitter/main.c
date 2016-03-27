@@ -706,25 +706,29 @@ void FlashLED(char rate)
  * SetupAccessoryPacket
  *
  * Accessory packets have the format:
- * {preamble} 0 10AAAAAA 0 1AAACDDD 0 EEEEEEEE 1
+ * {preamble} 0 10AAAAAA 0 1AAACAAD 0 EEEEEEEE 1
  * Where C activate or deactivates device
- *       DDD specifies which device at this address
- *       Least signficant 6 bits of address are in byte 1
- *       Most significant 3 bits of address are in byte 2, ones complement
+ *       D specifies which device at this address (e.g. set or clear switch)
+ *       Least significant 2 bits of address are byte 2 bits 1 & 2
+ *       Bits 2-7 of address are in byte 1
+ *       Most significant 3 bits of address (8-10) are in byte 2 bits 4-6, ones complement
  *       EEEEEEEE is the checksum
  */
-void SetupAccessoryPacket(unsigned int address, bool clear, byte device)
+void SetupAccessoryPacket(unsigned int address, bool activate, byte device)
 {
+	byte dev = (device & 0x01) | (((byte)address<<1) & 0x06);		// Device includes bottom two bits of address
+	unsigned int addr = (address>>2) + 1;			// Address is remainder of address, plus one
+
 	dccBufferIndex = 1;			// Start transmission at dccAddress1
 	dccBuffer.dccAddress0 = 0;
-	dccBuffer.dccAddress1 = 0x80 | (byte)(address & 0x003F);	// Bottom 6 address bits
+	dccBuffer.dccAddress1 = 0x80 | (byte)(addr & 0x003F);	// Address bits 2-7
 
-	dccBuffer.dccInstruction = ~(address>>2);					// Top three bits of address in upper nibble
+	dccBuffer.dccInstruction = ~(addr>>2);					// Top three bits of address in upper nibble
 	dccBuffer.dccInstruction &= 0x70;
-	dccBuffer.dccInstruction |= 0x88;					// Set bit 3 to activate
-	dccBuffer.dccInstruction |= ((device<<1) & 0x06);	// Device in bits 1 & 2
-	if (clear)
-		dccBuffer.dccInstruction |= 0x01;				// Set bit 0 to clear
+	dccBuffer.dccInstruction |= 0x80;
+	if (activate)
+		dccBuffer.dccInstruction |= 0x08;				// Set bit 3 to activate
+	dccBuffer.dccInstruction |= dev & 0x07;			// Device in bottom three bits
 }
 
 

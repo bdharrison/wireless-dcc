@@ -45,6 +45,9 @@ are permitted provided that the following conditions are met:
 #include  "msp430g2553.h"
 #include  "CC1101.h"
 
+#define byte	unsigned char
+#define uint	unsigned int
+
 #define		memcpy		__builtin_memcpy
 
 // P1 Connections
@@ -52,7 +55,7 @@ are permitted provided that the following conditions are met:
 #define     POTH                  BIT1	// out: Pot high
 #define     POTIN	              BIT2	// in:  Pot tap
 #define     POTL	              BIT3	// out: Pot low
-#define     UNUSED14	          BIT4	// out: Unused
+#define     PUSH6		          BIT4	// in:  Pushbutton 6 - accessory
 #define     SCLK                  BIT5	// out: To radio
 #define     MISO                  BIT6	// in:  I2C from radio UCB0
 #define     MOSI                  BIT7	// out: I2C to radio UCB0
@@ -124,6 +127,8 @@ struct configVariables {
 	bool f10Toggle;			// speed report			status report
 	bool f11Toggle;			// horn/whistle toggle	horn/whistle toggle
 	bool f12Toggle;			// cab lights			cab lights
+
+	bool bCenterOff;		// Speed control has center-off position
 };
 
 // Following constants can be modified by changing the values in the HEX file
@@ -131,12 +136,21 @@ struct configVariables {
 #pragma SET_DATA_SECTION(".infoC")
 
 const struct configVariables flashcv = {
-		3, 								// Loco Address
+		3,	 							// Loco Address
 		2,								// Radio Channel
-		true, false, false, false,		// Toggle flags F0-F3
+		true, true, false, false,		// Toggle flags F0-F3
 		true, true, false, false,		// Toggle flags F4-F7
-		true, true, false, true, true	// Toggle flags F8-F12
+		true, true, false, true, true,	// Toggle flags F8-F12
+		true							// Center-off speed control
 };
+
+#pragma SET_DATA_SECTION(".infoB")
+
+// Device address = (accAddress-1)*4 + accDevice + 1
+// For example, switch 3 has accAddress=1 and accDevice=2
+const uint accAddress[6] = { 1, 1, 1, 1, 1, 1 };	// DCC address for PB0-5
+const char accDevice[6]  = { 2, 1, 0, 2, 1, 0 };	// DCC device for PB0-5
+const bool accClear[6]   = { 0, 0, 0, 1, 1, 1 };	// DCC clear flag for PB0-5
 
 #pragma SET_DATA_SECTION()
 
@@ -160,6 +174,7 @@ struct dccFunctions {
 };
 
 static unsigned int powerOffCounter = 0;
+static int sentAccessory = 0;	// Counter for debugging
 
 void Initialize(void);
 void InitializeTimers(void);
@@ -167,7 +182,11 @@ void InitializePorts(void);
 void SetRadioChannel(bool bReset);
 void InitializeRadio(void);
 
+void GetAccessoryCommand(void);
+void TransmitAccessoryPacket(unsigned int address, bool activate, byte device);
+
 int  GetSpeed(void);
+bool InAccessoryMode(void);
 unsigned char GetPushButtonState(void);
 void SetDCCFunction(unsigned char* pDccFunction, unsigned char pbState, unsigned char pbBit, unsigned char dccBit, bool bToggle);
 void DCCFunction(unsigned char pbState, struct dccFunctions *  pDccFn);
@@ -211,13 +230,18 @@ void main(void)
 
 		SendByte(CC1101_STX);					// In IDLE state: enable TX
 
-		speed = GetSpeed();
-		pbState = GetPushButtonState();
-		DCCFunction(pbState, &dccFn);			// Set up the DCC function settings
-		SetRadioChannel(false);
-		FlashLED(speed? (speed>0? FLASH_SLOW : FLASH_FAST) : FLASH_ON);
-		SetupDCCBuffer(speed, &dccFn);
-		TransmitData();
+		if (InAccessoryMode()) {
+			GetAccessoryCommand();
+
+		} else {
+			speed = GetSpeed();
+			pbState = GetPushButtonState();
+			DCCFunction(pbState, &dccFn);			// Set up the DCC function settings
+			SetRadioChannel(false);
+			FlashLED(speed? (speed>0? FLASH_SLOW : FLASH_FAST) : FLASH_ON);
+			SetupDCCBuffer(speed, &dccFn);
+			TransmitData();
+		}
 		CheckPowerOff();
 	}
 }
@@ -274,9 +298,10 @@ void InitializeTimers(void)
 void InitializePorts(void)
 {
 	P1OUT = 0;							// Outputs low
+	P1REN = PUSH6;						// Pull input up
 	P1SEL = MOSI | MISO | SCLK;			// Secondary mode for MOSI, MISO, SCLK
 	P1SEL2 = MOSI | MISO | SCLK;		// secondary for MOSI, MISO, SCLK
-	P1DIR = MOSI | SCLK | UNUSED14 | POTL | POTH | LED1;	// Outputs
+	P1DIR = MOSI | SCLK | POTL | POTH | LED1;	// Outputs
 	ADC10AE0 = POTIN;					// Analog enable
 
 	P2SEL = GDO0;
@@ -350,10 +375,73 @@ void InitializeRadio(void)
 }
 
 /*
+ * InAccessoryMode
+ */
+bool InAccessoryMode(void) {
+	if (cv.bCenterOff)		// Accessory mode only supported with center-off control
+		return (P1IN & PUSH6);
+	return false;
+}
+
+/*
+ * GetAccessoryCommand
+ *
+ * If any pushbutton is pressed then transmit the appropriate DCC command
+ */
+void GetAccessoryCommand(void)
+{
+	byte PBState;
+	int pb;
+
+	PBState = P2IN & (PUSH0 | PUSH1 | PUSH2 | PUSH3 | PUSH4 | PUSH5);
+
+	for (pb=0; pb<6; pb++) {
+		if (PBState & 0x01) {
+			TransmitAccessoryPacket(accAddress[pb], accClear[pb], accDevice[pb]);
+			break;
+		}
+		PBState >>= 1;
+	}
+}
+
+/*
+ * TransmitAccessoryPacket
+ *
+ * Accessory packets have the format:
+ * {preamble} 0 10AAAAAA 0 1AAACDDD 0 EEEEEEEE 1
+ * Where C activate or deactivates device
+ *       DDD specifies which device at this address
+ *       Least signficant 6 bits of address are in byte 1
+ *       Most significant 3 bits of address are in byte 2, ones complement
+ *       EEEEEEEE is the checksum
+ */
+void TransmitAccessoryPacket(unsigned int address, bool clear, byte device)
+{
+	dccBufferIndex = 1;			// Start transmission at dccAddress1
+	dccBuffer.dccAddress0 = 0;
+	dccBuffer.dccAddress1 = 0x80 | (byte)(address & 0x003F);	// Bottom 6 address bits
+
+	dccBuffer.dccInstruction = ~(address>>2);					// Top three bits of address in upper nibble
+	dccBuffer.dccInstruction &= 0x70;
+	dccBuffer.dccInstruction |= 0x88;					// Set bit 3 to activate
+	dccBuffer.dccInstruction |= ((device<<1) & 0x06);	// Device in bits 1 & 2
+	if (clear)
+		dccBuffer.dccInstruction |= 0x01;				// Set bit 0 to clear
+
+	dccBuffer.dccChecksum = dccBuffer.dccAddress0 ^ dccBuffer.dccAddress1 ^ dccBuffer.dccInstruction;
+
+	TransmitData();
+	sentAccessory++;
+}
+
+
+/*
  * GetSpeed
  *
  * Get the current speed setting from the potentiometer using the A2D converter
- * Middle is off, higher is forwards and lower is reverse
+ * In center-off mode, middle is off, higher is forwards and lower is reverse
+ * Otherwise PUSH6 controls direction
+ *
  * Set up speed and direction
  */
 int GetSpeed(void)
@@ -374,10 +462,16 @@ int GetSpeed(void)
 	CLEAR_BIT(P1OUT, POTL);
 	SET_BIT(P1DIR, LED1);
 	speed = ADC10MEM>>4;					// 10-bit value reduced to 0-64
-	speed -= 32;							// Change to signed -32 to +32
+	if (cv.bCenterOff) {
+		speed -= 32;						// Change to signed -32 to +32
+		if ((speed > -3) && (speed < 2))	// Reduce sensitivity around the mid-point
+			speed = 0;
 
-	if ((speed > -3) && (speed < 2))		// Reduce sensitivity around the mid-point
-		speed = 0;
+	} else {
+		speed >>=2;							// Change to 0-32
+		if (P1IN & PUSH6)
+			speed = -speed;					// Change to reverse
+	}
 
 	return speed;
 }
@@ -738,7 +832,7 @@ void UpdateFlash(void)
 	FCTL2 = FWKEY | FSSEL_1 | 16;	// MCLK(8MHz) / (16+1) = 470kHz flash clock
 	FCTL3 = FWKEY;					// Unlock segment
 
-	*((unsigned char *)&flashcv) = 0;				// Dummy write to initiate segment erase
+	*((unsigned char *)&flashcv) = 0; // Dummy write to initiate segment erase
 
 	FCTL1 = FWKEY | WRT;			// Write
 
